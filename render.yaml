@@ -1,0 +1,23 @@
+# render.yaml — Render.com deployment config
+# DO NOT put secrets here — set them in Render dashboard → Environment tab
+
+services:
+  - type: web
+    name: nse-scanner-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app -c gunicorn.conf.py
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: UPSTOX_API_KEY
+        sync: false
+      - key: UPSTOX_API_SECRET
+        sync: false
+      - key: UPSTOX_REDIRECT_URI
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
