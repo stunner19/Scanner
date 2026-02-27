@@ -1,10 +1,10 @@
 import os
 
 bind = f"0.0.0.0:{os.environ.get('PORT', 5001)}"
-workers = 1  # single worker — SSE needs sticky connections
-worker_class = "gevent"  # async worker — handles concurrent SSE streams
-worker_connections = 100
-timeout = 120  # long timeout for Nifty 500 scans
+workers = 1
+worker_class = "gthread"  # threaded sync worker — no gevent, no recursion issues
+threads = 4  # handles concurrent SSE + API requests
+timeout = 120
 keepalive = 5
 accesslog = "-"
 errorlog = "-"
