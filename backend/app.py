@@ -1,18 +1,18 @@
 """
 NSE Trading Scanner — Flask REST API with Upstox OAuth2.
 
-One-time setup:
-  1. GET  /api/auth/login-url  → open this URL in browser
-  2. Upstox redirects to /api/auth/callback?code=xxx automatically
-  3. App exchanges code for long-lived token and saves to config.json
-  4. All future scans work automatically — no daily login needed
+Scanning uses a poll-based approach (not SSE) to work reliably on
+Render's free tier which kills connections after 90s:
+  POST /api/scan/start          → starts background scan, returns job_id
+  GET  /api/scan/status/<id>    → poll this every second for progress + results
 """
 
 import os
 import json
 import logging
+import threading
 import traceback
-from flask import Flask, jsonify, request, redirect, Response, stream_with_context
+from flask import Flask, jsonify, request, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
 
@@ -25,6 +25,15 @@ from strategies import get_strategy, get_strategy_list
 from universe import get_universe, get_universe_names
 from data_provider import exchange_code_for_token, preload_instruments
 from token_manager import get_token_status
+from scan_store import (
+    create_job,
+    get_job,
+    update_progress,
+    add_match,
+    finish_job,
+    fail_job,
+    cleanup_old_jobs,
+)
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -37,22 +46,14 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 def login_url():
     api_key = os.environ.get("UPSTOX_API_KEY", "").strip()
     redirect_uri = os.environ.get("UPSTOX_REDIRECT_URI", "").strip()
-
     if not api_key or not redirect_uri:
         return (
-            jsonify(
-                {
-                    "error": "UPSTOX_API_KEY and UPSTOX_REDIRECT_URI must be set in backend/.env"
-                }
-            ),
+            jsonify({"error": "UPSTOX_API_KEY and UPSTOX_REDIRECT_URI must be set"}),
             500,
         )
-
     url = (
         f"https://api.upstox.com/v2/login/authorization/dialog"
-        f"?response_type=code"
-        f"&client_id={api_key}"
-        f"&redirect_uri={redirect_uri}"
+        f"?response_type=code&client_id={api_key}&redirect_uri={redirect_uri}"
     )
     return jsonify({"login_url": url})
 
@@ -61,12 +62,10 @@ def login_url():
 def auth_callback():
     code = request.args.get("code", "").strip()
     error = request.args.get("error", "").strip()
-
     if error:
         return jsonify({"error": f"Upstox login error: {error}"}), 400
     if not code:
         return jsonify({"error": "No authorization code received"}), 400
-
     try:
         exchange_code_for_token(code)
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:8080")
@@ -108,84 +107,35 @@ def list_universes():
     )
 
 
-# ── Scanner — SSE streaming endpoint ─────────────────────────────────────────
+# ── Poll-based Scanner ────────────────────────────────────────────────────────
 
 
-def _check_auth():
+def _run_scan_background(job_id: str, strategy, tickers: list):
+    """Runs in a background thread. Updates scan_store as stocks complete."""
+    try:
+        for event in strategy.run_stream(tickers):
+            total = event.get("total", len(tickers))
+            completed = event.get("completed", 0)
+            update_progress(job_id, completed, total)
+            if event.get("type") == "match":
+                add_match(job_id, event)
+        finish_job(job_id)
+        log.info(f"Job {job_id} complete")
+        cleanup_old_jobs()
+    except Exception as e:
+        log.error(traceback.format_exc())
+        fail_job(job_id, str(e))
+
+
+@app.route("/api/scan/start", methods=["POST"])
+def scan_start():
+    """Start a background scan. Returns job_id immediately."""
     status = get_token_status()
     if not status["valid"] or not status["access_token"]:
-        return None, "Not authenticated. Complete one-time Upstox login first."
-    return status, None
-
-
-@app.route("/api/scan/stream", methods=["GET"])
-def scan_stream():
-    """
-    Server-Sent Events endpoint — streams results live as each stock completes.
-    The frontend receives matches immediately without waiting for all stocks.
-
-    Query params: strategy=RSI Oversold&universe=Nifty 500
-    """
-    _, auth_err = _check_auth()
-    if auth_err:
-        return jsonify({"error": auth_err}), 401
-
-    strategy_name = request.args.get("strategy", "").strip()
-    universe_name = request.args.get("universe", "").strip()
-
-    if not strategy_name:
-        return jsonify({"error": "strategy is required"}), 400
-    if not universe_name:
-        return jsonify({"error": "universe is required"}), 400
-
-    strategy = get_strategy(strategy_name)
-    if not strategy:
-        return jsonify({"error": f"Unknown strategy: {strategy_name}"}), 404
-
-    tickers = get_universe(universe_name)
-    if not tickers:
-        return jsonify({"error": f"Unknown universe: {universe_name}"}), 404
-
-    log.info(
-        f"[SSE] Scanning '{universe_name}' ({len(tickers)} stocks) "
-        f"with '{strategy_name}'"
-    )
-
-    def event_stream():
-        try:
-            matches = []
-            for event in strategy.run_stream(tickers):
-                if event["type"] == "match":
-                    matches.append(event)
-
-                # Send every event (progress + matches) to frontend
-                yield f"data: {json.dumps(event)}\n\n"
-
-            # Final summary event
-            yield f"data: {json.dumps({'type': 'done', 'total_scanned': len(tickers), 'matches': len(matches)})}\n\n"
-
-        except Exception as e:
-            log.error(traceback.format_exc())
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable Nginx buffering on Render
-        },
-    )
-
-
-# ── Scanner — classic blocking endpoint (kept for compatibility) ──────────────
-
-
-@app.route("/api/scan", methods=["POST"])
-def scan():
-    _, auth_err = _check_auth()
-    if auth_err:
-        return jsonify({"error": auth_err}), 401
+        return (
+            jsonify({"error": "Not authenticated. Complete Upstox login first."}),
+            401,
+        )
 
     body = request.get_json(force=True) or {}
     strategy_name = body.get("strategy", "").strip()
@@ -204,9 +154,47 @@ def scan():
     if not tickers:
         return jsonify({"error": f"Unknown universe: {universe_name}"}), 404
 
-    log.info(
-        f"Scanning '{universe_name}' ({len(tickers)} stocks) with '{strategy_name}'"
+    job_id = create_job()
+    thread = threading.Thread(
+        target=_run_scan_background,
+        args=(job_id, strategy, tickers),
+        daemon=True,
     )
+    thread.start()
+
+    log.info(
+        f"Job {job_id} started — {universe_name} / {strategy_name} / {len(tickers)} stocks"
+    )
+    return jsonify({"job_id": job_id, "total": len(tickers)})
+
+
+@app.route("/api/scan/status/<job_id>")
+def scan_status(job_id: str):
+    """Poll this every second to get scan progress and results so far."""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
+
+
+# ── Keep old /api/scan for local dev convenience ──────────────────────────────
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan():
+    status = get_token_status()
+    if not status["valid"] or not status["access_token"]:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    body = request.get_json(force=True) or {}
+    strategy_name = body.get("strategy", "").strip()
+    universe_name = body.get("universe", "").strip()
+
+    strategy = get_strategy(strategy_name)
+    tickers = get_universe(universe_name)
+
+    if not strategy or not tickers:
+        return jsonify({"error": "Invalid strategy or universe"}), 400
 
     try:
         results = strategy.run(tickers)
@@ -225,8 +213,6 @@ def scan():
                 "results": results,
             }
         )
-    except EnvironmentError as e:
-        return jsonify({"error": str(e)}), 401
     except Exception as e:
         log.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
