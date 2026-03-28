@@ -152,7 +152,10 @@ def scan_start():
 
     tickers = get_universe(universe_name)
     if not tickers:
-        return jsonify({"error": f"Unknown universe: {universe_name}"}), 404
+        from universe import get_universe_names
+        if universe_name not in get_universe_names():
+            return jsonify({"error": f"Unknown universe: {universe_name}"}), 404
+        return jsonify({"error": f"Could not fetch stocks for '{universe_name}' — NSE may be unreachable"}), 503
 
     job_id = create_job()
     thread = threading.Thread(
