@@ -66,7 +66,12 @@ def _fetch_from_wikipedia(index_name: str) -> list[str]:
 
         tables = pd.read_html(io.StringIO(resp.text))
         for df in tables:
-            cols_lower = {c: c.strip().lower() for c in df.columns}
+            # Flatten multi-level (tuple) column headers to plain strings
+            df.columns = [
+                " ".join(str(c) for c in col).strip() if isinstance(col, tuple) else str(col).strip()
+                for col in df.columns
+            ]
+            cols_lower = {c: c.lower() for c in df.columns}
             # Match columns named "symbol", "nse symbol", "nse code", "ticker"
             match = next(
                 (orig for orig, lower in cols_lower.items()
@@ -81,11 +86,11 @@ def _fetch_from_wikipedia(index_name: str) -> list[str]:
                 .dropna()
                 .astype(str)
                 .str.strip()
-                .str.replace(r"\.NS$", "", regex=True)  # strip Yahoo-style suffix
+                .str.replace(r"\.NS$", "", regex=True)
                 .tolist()
             )
-            # Filter out header-like rows (e.g. "Symbol", "NSE Code")
-            symbols = [s for s in symbols if s and not s.lower() in ("symbol", "nse code", "ticker", "nan")]
+            # Filter out header-like rows
+            symbols = [s for s in symbols if s and s.lower() not in ("symbol", "nse code", "ticker", "nan")]
             if symbols:
                 log.info(f"{index_name}: got {len(symbols)} symbols from Wikipedia")
                 return symbols
