@@ -22,21 +22,28 @@ CACHE_TTL = 3600  # re-fetch at most once per hour
 
 # ── Wikipedia URLs for each index ─────────────────────────────────────────────
 _WIKI_URLS: dict[str, str] = {
-    "Nifty 50":       "https://en.wikipedia.org/wiki/NIFTY_50",
-    "Nifty Next 50":  "https://en.wikipedia.org/wiki/Nifty_Next_50",
-    "Nifty Bank":     "https://en.wikipedia.org/wiki/NIFTY_Bank",
-    "Nifty IT":       "https://en.wikipedia.org/wiki/NIFTY_IT",
-    "Nifty Pharma":   "https://en.wikipedia.org/wiki/Nifty_Pharma",
-    "Nifty FMCG":     "https://en.wikipedia.org/wiki/Nifty_FMCG",
-    "Nifty Midcap 50":"https://en.wikipedia.org/wiki/Nifty_Midcap_50",
+    "Nifty 50":         "https://en.wikipedia.org/wiki/NIFTY_50",
+    "Nifty Next 50":    "https://en.wikipedia.org/wiki/Nifty_Next_50",
+    "Nifty Midcap 50":  "https://en.wikipedia.org/wiki/Nifty_Midcap_50",
+    "Nifty Midcap 100": "https://en.wikipedia.org/wiki/Nifty_Midcap_100",
+    "Nifty Midcap 150": "https://en.wikipedia.org/wiki/Nifty_Midcap_150",
+    "Nifty Smallcap 50":"https://en.wikipedia.org/wiki/Nifty_Smallcap_50",
+    "Nifty Bank":       "https://en.wikipedia.org/wiki/NIFTY_Bank",
+    "Nifty IT":         "https://en.wikipedia.org/wiki/NIFTY_IT",
+    "Nifty Pharma":     "https://en.wikipedia.org/wiki/Nifty_Pharma",
+    "Nifty FMCG":       "https://en.wikipedia.org/wiki/Nifty_FMCG",
 }
 
-# Derived indices — built from combining fetched ones
+# Derived indices — built from combining fetched ones (deduplicated)
 _DERIVED: dict[str, list[str]] = {
     "Nifty 100": ["Nifty 50", "Nifty Next 50"],
+    "Nifty 200": ["Nifty 50", "Nifty Next 50", "Nifty Midcap 100"],
+    "Nifty 500": ["Nifty 50", "Nifty Next 50", "Nifty Midcap 100", "Nifty Midcap 150", "Nifty Smallcap 50"],
 }
 
-INDEX_MAP = {**{k: k for k in _WIKI_URLS}, **{k: k for k in _DERIVED}}
+# Public-facing universes (excludes internal sub-indices used only for derivation)
+_INTERNAL = {"Nifty Midcap 100", "Nifty Midcap 150", "Nifty Smallcap 50"}
+INDEX_MAP = {**{k: k for k in _WIKI_URLS if k not in _INTERNAL}, **{k: k for k in _DERIVED}}
 
 # ── In-memory cache ───────────────────────────────────────────────────────────
 _cache: dict = {}
