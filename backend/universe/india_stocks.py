@@ -40,37 +40,51 @@ _cache_time: dict = {}  # { "Nifty 50": timestamp }
 _cache_lock = threading.Lock()
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/",
+})
 
 
 def _fetch_from_archive(index_name: str) -> list[str]:
     """
     Download the NSE archive CSV for one index and return a list of symbols.
     The CSV has a 'Symbol' column with plain NSE tickers.
+    Retries up to 3 times on failure.
     """
     import pandas as pd
 
     filename = INDEX_MAP[index_name]
     url = f"{NSE_ARCHIVE_BASE}/{filename}"
 
-    try:
-        resp = _session.get(url, timeout=15)
-        resp.raise_for_status()
+    for attempt in range(1, 4):
+        try:
+            resp = _session.get(url, timeout=20)
+            log.info(f"{index_name}: HTTP {resp.status_code} from archive (attempt {attempt})")
 
-        df = pd.read_csv(io.StringIO(resp.text))
-        # Column is typically "Symbol" — find it case-insensitively
-        col = next((c for c in df.columns if c.strip().lower() == "symbol"), None)
-        if col is None:
-            log.error(f"{index_name}: no 'Symbol' column in CSV. Columns: {list(df.columns)}")
-            return []
+            if resp.status_code != 200:
+                log.error(f"{index_name}: got {resp.status_code}, body preview: {resp.text[:200]}")
+                continue
 
-        symbols = df[col].dropna().str.strip().tolist()
-        log.info(f"{index_name}: fetched {len(symbols)} stocks from NSE archive")
-        return symbols
+            df = pd.read_csv(io.StringIO(resp.text))
+            # Column is typically "Symbol" — find it case-insensitively
+            col = next((c for c in df.columns if c.strip().lower() == "symbol"), None)
+            if col is None:
+                log.error(f"{index_name}: no 'Symbol' column. Columns: {list(df.columns)}. Preview: {resp.text[:200]}")
+                return []
 
-    except Exception as e:
-        log.error(f"{index_name}: archive fetch error — {e}")
-        return []
+            symbols = df[col].dropna().str.strip().tolist()
+            log.info(f"{index_name}: fetched {len(symbols)} stocks from NSE archive")
+            return symbols
+
+        except Exception as e:
+            log.error(f"{index_name}: archive fetch error (attempt {attempt}) — {type(e).__name__}: {e}")
+
+    return []
 
 
 def get_universe(name: str) -> list[str]:
