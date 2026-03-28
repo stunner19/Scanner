@@ -90,11 +90,13 @@ def debug_universe():
         tables = pd.read_html(io.StringIO(r.text))
         result = []
         for i, df in enumerate(tables):
+            # Flatten multi-level column headers to strings
+            df.columns = [" | ".join(str(c) for c in col) if isinstance(col, tuple) else str(col) for col in df.columns]
             result.append({
                 "table_index": i,
                 "columns": list(df.columns),
                 "row_count": len(df),
-                "first_row": df.iloc[0].to_dict() if len(df) > 0 else {},
+                "first_row": {str(k): str(v) for k, v in df.iloc[0].to_dict().items()} if len(df) > 0 else {},
             })
         return jsonify({"status": r.status_code, "tables": result})
     except Exception as e:
