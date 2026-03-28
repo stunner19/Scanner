@@ -80,12 +80,25 @@ def auth_callback():
 
 @app.route("/api/debug/universe")
 def debug_universe():
-    """Test endpoint — fetches Nifty 50 from Wikipedia and returns count."""
-    tickers = get_universe("Nifty 50")
-    return jsonify({
-        "count": len(tickers),
-        "sample": tickers[:10],
-    })
+    """Test endpoint — dumps Wikipedia table structure for debugging."""
+    import requests as req
+    import pandas as pd
+    import io
+    url = "https://en.wikipedia.org/wiki/NIFTY_50"
+    try:
+        r = req.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        tables = pd.read_html(io.StringIO(r.text))
+        result = []
+        for i, df in enumerate(tables):
+            result.append({
+                "table_index": i,
+                "columns": list(df.columns),
+                "row_count": len(df),
+                "first_row": df.iloc[0].to_dict() if len(df) > 0 else {},
+            })
+        return jsonify({"status": r.status_code, "tables": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/health")
