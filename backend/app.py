@@ -80,21 +80,12 @@ def auth_callback():
 
 @app.route("/api/debug/universe")
 def debug_universe():
-    """Test endpoint — fetches Nifty 50 and returns count + any error details."""
-    import requests as req
-    url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
-    try:
-        r = req.get(url, timeout=20, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.nseindia.com/",
-        })
-        return jsonify({
-            "status_code": r.status_code,
-            "content_type": r.headers.get("Content-Type"),
-            "body_preview": r.text[:300],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Test endpoint — fetches Nifty 50 from Wikipedia and returns count."""
+    tickers = get_universe("Nifty 50")
+    return jsonify({
+        "count": len(tickers),
+        "sample": tickers[:10],
+    })
 
 
 @app.route("/api/health")
