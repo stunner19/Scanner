@@ -84,20 +84,9 @@ def debug_universe():
     import requests as req
     import pandas as pd
     import io
-    url = request.args.get("url", "https://en.wikipedia.org/wiki/Nifty_Midcap_100")
-    try:
-        r = req.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        # Return page title + preview so we can confirm the page exists
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(r.text, "html.parser")
-        title = soup.find("title")
-        return jsonify({
-            "status": r.status_code,
-            "page_title": title.text if title else None,
-            "body_preview": r.text[5000:5500],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    name = request.args.get("index", "Nifty 100")
+    tickers = get_universe(name)
+    return jsonify({"index": name, "count": len(tickers), "sample": tickers[:10]})
 
 
 @app.route("/api/health")
