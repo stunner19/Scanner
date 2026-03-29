@@ -84,9 +84,17 @@ def debug_universe():
     import requests as req
     import pandas as pd
     import io
-    name = request.args.get("index", "Nifty 100")
-    tickers = get_universe(name)
-    return jsonify({"index": name, "count": len(tickers), "sample": tickers[:10]})
+    url = request.args.get("url", "https://stockanalysis.com/indexes/nifty-100-index/")
+    try:
+        r = req.get(url, timeout=20, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        })
+        return jsonify({
+            "status": r.status_code,
+            "body_preview": r.text[3000:4000],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/health")
