@@ -84,13 +84,12 @@ def debug_universe():
     import requests as req
     import pandas as pd
     import io
-    url = "https://en.wikipedia.org/wiki/NIFTY_50"
+    url = request.args.get("url", "https://en.wikipedia.org/wiki/Nifty_Midcap_100")
     try:
         r = req.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         tables = pd.read_html(io.StringIO(r.text))
         result = []
         for i, df in enumerate(tables):
-            # Flatten multi-level column headers to strings
             df.columns = [" | ".join(str(c) for c in col) if isinstance(col, tuple) else str(col) for col in df.columns]
             result.append({
                 "table_index": i,
