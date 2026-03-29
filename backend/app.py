@@ -87,17 +87,15 @@ def debug_universe():
     url = request.args.get("url", "https://en.wikipedia.org/wiki/Nifty_Midcap_100")
     try:
         r = req.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        tables = pd.read_html(io.StringIO(r.text))
-        result = []
-        for i, df in enumerate(tables):
-            df.columns = [" | ".join(str(c) for c in col) if isinstance(col, tuple) else str(col) for col in df.columns]
-            result.append({
-                "table_index": i,
-                "columns": list(df.columns),
-                "row_count": len(df),
-                "first_row": {str(k): str(v) for k, v in df.iloc[0].to_dict().items()} if len(df) > 0 else {},
-            })
-        return jsonify({"status": r.status_code, "tables": result})
+        # Return page title + preview so we can confirm the page exists
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        title = soup.find("title")
+        return jsonify({
+            "status": r.status_code,
+            "page_title": title.text if title else None,
+            "body_preview": r.text[5000:5500],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
