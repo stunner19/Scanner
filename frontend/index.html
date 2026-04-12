@@ -2,6 +2,8 @@
 <html lang="en">
 
 <head>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3758740979981973"
+    crossorigin="anonymous"></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
   <title>NSEScan — India Market Scanner</title>
@@ -1131,92 +1133,117 @@
 
       hideError();
       setLoading(true);
-      clearProgress();
-      $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Scanning ${universe}…</span>`;
+      $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Waking up server…</span>`;
       $('scanTime').textContent = '';
-      $('resultsBox').innerHTML = emptyState('Scanning…', `Running ${strategy} across ${universe} stocks`);
+      $('resultsBox').innerHTML = emptyState('Scanning…', `Running ${strategy} across ${universe}`);
 
-      const t0 = Date.now();
-      const matches = [];
-      let total = 0;
-      let scanDone = false;
-
-      const url = `${BACKEND}/api/scan/stream?strategy=${encodeURIComponent(strategy)}&universe=${encodeURIComponent(universe)}`;
-      const es = new EventSource(url);
-
-      // Show progress bar immediately so it's visible even for fast scans
-      $('progressWrap').classList.add('show');
-      $('progressFill').style.width = '0%';
-      $('progressLabel').textContent = 'Starting scan…';
-
-      // Ping health first — wakes up Render free tier if sleeping
-      // and gives a clear error message if truly unreachable
+      // Wake up Render free tier first
       try {
-        $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Waking up server…</span>`;
         const ping = await fetch(`${BACKEND}/api/health`, { signal: AbortSignal.timeout(30000) });
         if (!ping.ok) throw new Error(`Server returned ${ping.status}`);
       } catch (e) {
-        showError(`Cannot reach backend at ${BACKEND} — ${e.message}. Check your Render deployment is running.`);
+        showError(`Cannot reach backend — ${e.message}`);
         clearProgress();
         setLoading(false);
         return;
       }
-      $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Scanning ${universe}…</span>`;
 
-      es.onmessage = (e) => {
-        const event = JSON.parse(e.data);
+      // Start background scan — returns job_id immediately
+      let job_id, total;
+      try {
+        $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Starting scan…</span>`;
+        const res = await fetch(`${BACKEND}/api/scan/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strategy, universe }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        job_id = data.job_id;
+        total = data.total;
+      } catch (e) {
+        showError(`Scan error: ${e.message}`);
+        clearProgress();
+        setLoading(false);
+        return;
+      }
 
-        // total comes from progress/match events
-        if (event.total) total = event.total;
-        if (event.total_scanned) total = event.total_scanned;
+      // Show progress bar
+      $('progressWrap').classList.add('show');
+      $('progressFill').style.width = '0%';
+      $('progressLabel').textContent = `0 / ${total} stocks scanned  ·  0%`;
 
-        if (!scanDone && (event.type === 'progress' || event.type === 'match')) {
-          if (event.type === 'match') matches.push(event);
-          const pct = total > 0 ? Math.round((event.completed / total) * 100) : 0;
-          updateProgress(pct, event.completed, total, matches.length);
-          if (event.type === 'match') {
-            renderLive(matches, strategy, universe, total, event.completed);
-          }
-        }
+      const t0 = Date.now();
+      const matches = [];
 
-        if (event.type === 'done') {
-          es.close();
-          scanDone = true;
-          const ms = Date.now() - t0;
-          matches.sort((a, b) => {
-            const sa = a.strength === 'Strong' ? 0 : 1;
-            const sb = b.strength === 'Strong' ? 0 : 1;
-            if (sa !== sb) return sa - sb;
-            return Math.abs(b.change_pct) - Math.abs(a.change_pct);
-          });
-          // Fill to 100% briefly before hiding
-          $('progressFill').style.width = '100%';
-          $('progressLabel').textContent = `${total} / ${total} stocks scanned  ·  100%`;
-          setTimeout(() => {
+      // Poll every second for progress + results
+      const poller = setInterval(async () => {
+        try {
+          const res = await fetch(`${BACKEND}/api/scan/status/${job_id}`);
+          const job = await res.json();
+
+          if (!res.ok || job.error) {
+            clearInterval(poller);
+            showError(`Scan error: ${job.error || 'Unknown error'}`);
             clearProgress();
-            render({ strategy, universe, total_scanned: total, matches: matches.length, results: matches });
-            $('scanTime').textContent = `Completed in ${(ms / 1000).toFixed(1)}s`;
             setLoading(false);
-          }, 400);
-        }
+            return;
+          }
 
-        if (event.type === 'error') {
-          es.close();
-          showError(`Scan error: ${event.message}`);
-          $('statusMsg').textContent = 'Scan failed.';
+          // Update progress bar
+          const completed = job.completed || 0;
+          const tot = job.total || total;
+          const pct = tot > 0 ? Math.round((completed / tot) * 100) : 0;
+          $('progressFill').style.width = `${pct}%`;
+          $('progressLabel').textContent = `${completed} / ${tot} stocks scanned  ·  ${pct}%`;
+
+          // Update live results if new matches arrived
+          const newMatches = job.matches || [];
+          if (newMatches.length > matches.length) {
+            matches.length = 0;
+            matches.push(...newMatches);
+            $('statusMsg').innerHTML =
+              `<span style="color:var(--text-2)">Scanning… found <strong style="color:var(--accent)">${matches.length} match${matches.length !== 1 ? 'es' : ''}</strong> so far</span>`;
+            renderLive(matches, strategy, universe, tot, completed);
+          }
+
+          // Done!
+          if (job.status === 'done') {
+            clearInterval(poller);
+            const ms = Date.now() - t0;
+
+            matches.sort((a, b) => {
+              const sa = a.strength === 'Strong' ? 0 : 1;
+              const sb = b.strength === 'Strong' ? 0 : 1;
+              if (sa !== sb) return sa - sb;
+              return Math.abs(b.change_pct) - Math.abs(a.change_pct);
+            });
+
+            // Fill bar to 100% briefly
+            $('progressFill').style.width = '100%';
+            $('progressLabel').textContent = `${tot} / ${tot} stocks scanned  ·  100%`;
+
+            setTimeout(() => {
+              clearProgress();
+              render({
+                strategy, universe, total_scanned: tot,
+                matches: matches.length, results: matches
+              });
+              $('scanTime').textContent = `Completed in ${(ms / 1000).toFixed(1)}s`;
+              setLoading(false);
+            }, 400);
+          }
+
+        } catch (e) {
+          clearInterval(poller);
+          showError(`Polling error: ${e.message}`);
           clearProgress();
           setLoading(false);
         }
-      };
-
-      es.onerror = () => {
-        es.close();
-        showError(`Streaming connection lost. This can happen if the scan takes too long on Render's free tier. Try a smaller universe (Nifty 50 or Nifty Bank) first.`);
-        $('statusMsg').textContent = 'Scan failed.';
-        clearProgress();
-        setLoading(false);
-      };
+      }, 1000);  // poll every 1 second
     }
+
+
 
     function updateProgress(pct, completed, total, matchCount) {
       $('progressWrap').classList.add('show');
