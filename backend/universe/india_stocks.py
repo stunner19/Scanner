@@ -1,169 +1,147 @@
 """
-india_stocks.py — Fetches NSE index constituents from Wikipedia and stockanalysis.com.
+india_stocks.py — Fetch NSE index constituents from official NSE CSV files.
 
-NSE blocks direct API and archive requests from cloud-hosted servers (403).
-- Wikipedia: used for indices that have constituent tables (Nifty 50, Bank, IT, etc.)
-- stockanalysis.com: used for larger indices (Nifty 100, 200, 500) that lack Wikipedia pages
+Why this approach:
+  - Avoids brittle HTML scraping from Wikipedia / third-party sites
+  - Uses official NSE-published constituent lists
+  - Works with simple CSV parsing and a small in-memory cache
+
+Notes for deployment:
+  - We try multiple NSE hosts because old and new archive URLs coexist
+  - Static CSV endpoints generally work more reliably than dynamic NSE APIs
+  - A browser-like User-Agent helps when running from cloud hosts such as Render
 """
 
+from __future__ import annotations
+
+import csv
 import io
 import time
 import logging
 import threading
 import requests
-import pandas as pd
 
 log = logging.getLogger(__name__)
 
-CACHE_TTL = 3600  # re-fetch at most once per hour
+CACHE_TTL = 3600  # 1 hour
+REQUEST_TIMEOUT = 20
 
-# ── Wikipedia URLs ─────────────────────────────────────────────────────────────
-_WIKI_URLS: dict[str, str] = {
-    "Nifty 50":        "https://en.wikipedia.org/wiki/NIFTY_50",
-    "Nifty Next 50":   "https://en.wikipedia.org/wiki/Nifty_Next_50",
-    "Nifty Midcap 50": "https://en.wikipedia.org/wiki/Nifty_Midcap_50",
-    "Nifty Bank":      "https://en.wikipedia.org/wiki/NIFTY_Bank",
-    "Nifty IT":        "https://en.wikipedia.org/wiki/NIFTY_IT",
-    "Nifty Pharma":    "https://en.wikipedia.org/wiki/Nifty_Pharma",
-    "Nifty FMCG":      "https://en.wikipedia.org/wiki/Nifty_FMCG",
+_CSV_FILES: dict[str, str] = {
+    "Nifty 50": "ind_nifty50list.csv",
+    "Nifty Next 50": "ind_niftynext50list.csv",
+    "Nifty Midcap 50": "ind_niftymidcap50list.csv",
+    "Nifty Bank": "ind_niftybanklist.csv",
+    "Nifty IT": "ind_niftyitlist.csv",
+    "Nifty Pharma": "ind_niftypharmalist.csv",
+    "Nifty FMCG": "ind_niftyfmcglist.csv",
+    "Nifty 100": "ind_nifty100list.csv",
+    "Nifty 200": "ind_nifty200list.csv",
+    "Nifty 500": "ind_nifty500list.csv",
 }
 
-# ── stockanalysis.com URLs ─────────────────────────────────────────────────────
-# These return a JSON payload with a "data" array containing {s: "SYMBOL.NS", ...}
-_SA_URLS: dict[str, str] = {
-    "Nifty 100": "https://stockanalysis.com/indexes/nifty-100-index/",
-    "Nifty 200": "https://stockanalysis.com/indexes/nifty-200-index/",
-    "Nifty 500": "https://stockanalysis.com/indexes/nifty-500-index/",
-}
+_BASE_URLS = [
+    "https://nsearchives.nseindia.com/content/indices",
+    "https://www.nseindia.com/content/indices",
+    "https://www1.nseindia.com/content/indices",
+]
 
-INDEX_MAP = {**{k: k for k in _WIKI_URLS}, **{k: k for k in _SA_URLS}}
-
-# ── In-memory cache ───────────────────────────────────────────────────────────
-_cache: dict = {}
-_cache_time: dict = {}
+_cache: dict[str, list[str]] = {}
+_cache_time: dict[str, float] = {}
 _cache_lock = threading.Lock()
 
 _session = requests.Session()
-_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-})
+_session.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/csv,text/plain,application/octet-stream,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+        "Connection": "keep-alive",
+    }
+)
 
 
-def _fetch_from_wikipedia(index_name: str) -> list[str]:
-    url = _WIKI_URLS.get(index_name)
-    if not url:
+def _normalize_symbol(value: str) -> str:
+    symbol = str(value).strip().upper()
+    if not symbol:
+        return ""
+    return symbol.replace(".NS", "")
+
+
+def _parse_constituents(csv_text: str, index_name: str) -> list[str]:
+    reader = csv.DictReader(io.StringIO(csv_text))
+    rows = list(reader)
+    if not rows:
+        log.warning("%s: NSE CSV returned no rows", index_name)
         return []
 
-    try:
-        resp = _session.get(url, timeout=20)
-        log.info(f"{index_name}: Wikipedia HTTP {resp.status_code}")
-        resp.raise_for_status()
+    if not reader.fieldnames:
+        log.warning("%s: NSE CSV has no header row", index_name)
+        return []
 
-        tables = pd.read_html(io.StringIO(resp.text))
-        for df in tables:
-            df.columns = [
-                " ".join(str(c) for c in col).strip() if isinstance(col, tuple) else str(col).strip()
-                for col in df.columns
-            ]
-            cols_lower = {c: c.lower() for c in df.columns}
-            match = next(
-                (orig for orig, lower in cols_lower.items()
-                 if any(kw in lower for kw in ("symbol", "nse code", "ticker"))),
-                None,
-            )
-            if match is None:
-                continue
+    normalized = {name.strip().lower(): name for name in reader.fieldnames}
+    symbol_col = None
+    for candidate in ("symbol", "ticker", "nse symbol", "company symbol"):
+        if candidate in normalized:
+            symbol_col = normalized[candidate]
+            break
 
-            symbols = (
-                df[match]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .str.replace(r"\.NS$", "", regex=True)
-                .tolist()
-            )
-            symbols = [s for s in symbols if s and s.lower() not in ("symbol", "nse code", "ticker", "nan")]
+    if not symbol_col:
+        log.warning("%s: no symbol column found in NSE CSV headers %s", index_name, reader.fieldnames)
+        return []
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        symbol = _normalize_symbol(row.get(symbol_col, ""))
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+
+    log.info("%s: parsed %s symbols from NSE CSV", index_name, len(symbols))
+    return symbols
+
+
+def _fetch_csv(index_name: str) -> list[str]:
+    filename = _CSV_FILES.get(index_name)
+    if not filename:
+        return []
+
+    errors: list[str] = []
+    for base_url in _BASE_URLS:
+        url = f"{base_url}/{filename}"
+        try:
+            resp = _session.get(url, timeout=REQUEST_TIMEOUT)
+            log.info("%s: NSE CSV %s -> HTTP %s", index_name, url, resp.status_code)
+            resp.raise_for_status()
+
+            symbols = _parse_constituents(resp.text, index_name)
             if symbols:
-                log.info(f"{index_name}: got {len(symbols)} symbols from Wikipedia")
                 return symbols
 
-        log.error(f"{index_name}: no matching table found on Wikipedia page")
-        return []
+            errors.append(f"{url} returned no symbols")
+        except Exception as exc:
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
 
-    except Exception as e:
-        log.error(f"{index_name}: Wikipedia fetch error — {type(e).__name__}: {e}")
-        return []
-
-
-def _fetch_from_stockanalysis(index_name: str) -> list[str]:
-    """
-    Scrape the constituent table from stockanalysis.com index page.
-    The page renders a table with a 'Symbol' column containing tickers like 'RELIANCE.NS'.
-    """
-    url = _SA_URLS.get(index_name)
-    if not url:
-        return []
-
-    try:
-        resp = _session.get(url, timeout=20)
-        log.info(f"{index_name}: stockanalysis.com HTTP {resp.status_code}")
-        resp.raise_for_status()
-
-        tables = pd.read_html(io.StringIO(resp.text))
-        for df in tables:
-            df.columns = [
-                " ".join(str(c) for c in col).strip() if isinstance(col, tuple) else str(col).strip()
-                for col in df.columns
-            ]
-            cols_lower = {c: c.lower() for c in df.columns}
-            match = next(
-                (orig for orig, lower in cols_lower.items()
-                 if any(kw in lower for kw in ("symbol", "ticker"))),
-                None,
-            )
-            if match is None:
-                continue
-
-            symbols = (
-                df[match]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .str.replace(r"\.NS$", "", regex=True)
-                .tolist()
-            )
-            symbols = [s for s in symbols if s and s.lower() not in ("symbol", "ticker", "nan")]
-            if symbols:
-                log.info(f"{index_name}: got {len(symbols)} symbols from stockanalysis.com")
-                return symbols
-
-        log.error(f"{index_name}: no matching table found on stockanalysis.com page")
-        return []
-
-    except Exception as e:
-        log.error(f"{index_name}: stockanalysis.com fetch error — {type(e).__name__}: {e}")
-        return []
+    log.error("%s: failed to fetch NSE constituents. %s", index_name, " | ".join(errors))
+    return []
 
 
 def get_universe(name: str) -> list[str]:
-    if name not in INDEX_MAP:
-        log.warning(f"Unknown universe: {name}")
+    if name not in _CSV_FILES:
+        log.warning("Unknown universe: %s", name)
         return []
 
     now = time.time()
-
     with _cache_lock:
         if name in _cache and (now - _cache_time.get(name, 0)) < CACHE_TTL:
-            return _cache[name]
+            return list(_cache[name])
 
-    if name in _SA_URLS:
-        symbols = _fetch_from_stockanalysis(name)
-    else:
-        symbols = _fetch_from_wikipedia(name)
-
+    symbols = _fetch_csv(name)
     if symbols:
         with _cache_lock:
             _cache[name] = symbols
@@ -173,4 +151,4 @@ def get_universe(name: str) -> list[str]:
 
 
 def get_universe_names() -> list[str]:
-    return list(INDEX_MAP.keys())
+    return list(_CSV_FILES.keys())
