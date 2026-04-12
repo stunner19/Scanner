@@ -15,6 +15,7 @@ class SMA34PullbackStrategy(BaseStrategy):
         if len(data) < 55:
             return None
 
+        open_ = data["Open"].squeeze()
         close = data["Close"].squeeze()
         high = data["High"].squeeze()
         low = data["Low"].squeeze()
@@ -24,6 +25,7 @@ class SMA34PullbackStrategy(BaseStrategy):
         sma_now = float(sma34.iloc[-1])
         sma_prev = float(sma34.iloc[-6])
         sma50_now = float(sma50.iloc[-1])
+        day_open = float(open_.iloc[-1])
         price = float(close.iloc[-1])
         day_high = float(high.iloc[-1])
         day_low = float(low.iloc[-1])
@@ -35,11 +37,15 @@ class SMA34PullbackStrategy(BaseStrategy):
         # and 34 SMA above the 50 SMA.
         in_uptrend = price > sma_now and sma_now > sma_prev and sma_now > sma50_now
 
-        # "Touch" means the day's range traded through the 34 SMA.
-        touched_sma = day_low <= sma_now <= day_high
-        closed_above = price > sma_now
+        # Only the lower wick should touch the 34 SMA.
+        lower_wick_touch = (
+            day_low <= sma_now
+            and day_open > sma_now
+            and price > sma_now
+            and day_high > sma_now
+        )
 
-        if not (in_uptrend and touched_sma and closed_above):
+        if not (in_uptrend and lower_wick_touch):
             return None
 
         dist_pct = round(((price - sma_now) / sma_now) * 100, 2)
