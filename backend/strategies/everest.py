@@ -12,16 +12,18 @@ Supertrend calculation:
 """
 
 import pandas as pd
-import numpy as np
 from .base import BaseStrategy
 
 
 def _supertrend(
     df: pd.DataFrame, period: int = 7, multiplier: float = 3.0
-) -> pd.Series:
+) -> tuple[pd.Series, pd.Series]:
     """
-    Returns a boolean Series — True where Supertrend is green (bullish).
-    Standard Supertrend algorithm using Wilder's smoothed ATR.
+    Returns:
+      - bullish: True where close is above the active Supertrend line
+      - st_line: active Supertrend line
+
+    Uses Wilder-style ATR and starts only once ATR values are available.
     """
     high = df["High"]
     low = df["Low"]
@@ -42,44 +44,48 @@ def _supertrend(
     upper_basic = hl2 + multiplier * atr
     lower_basic = hl2 - multiplier * atr
 
-    # Final bands with carry-forward logic
-    upper = upper_basic.copy()
-    lower = lower_basic.copy()
+    upper = pd.Series(index=df.index, dtype=float)
+    lower = pd.Series(index=df.index, dtype=float)
+    st_line = pd.Series(index=df.index, dtype=float)
+    bullish = pd.Series(False, index=df.index, dtype=bool)
 
-    for i in range(1, len(df)):
+    first_valid = atr.first_valid_index()
+    if first_valid is None:
+        return bullish, st_line
+
+    start = df.index.get_loc(first_valid)
+    upper.iloc[start] = upper_basic.iloc[start]
+    lower.iloc[start] = lower_basic.iloc[start]
+
+    # Seed the initial state from price vs the lower band at the first valid bar.
+    bullish.iloc[start] = close.iloc[start] >= lower.iloc[start]
+    st_line.iloc[start] = lower.iloc[start] if bullish.iloc[start] else upper.iloc[start]
+
+    for i in range(start + 1, len(df)):
+        prev_upper = upper.iloc[i - 1]
+        prev_lower = lower.iloc[i - 1]
+        prev_close = close.iloc[i - 1]
+
         upper.iloc[i] = (
             upper_basic.iloc[i]
-            if upper_basic.iloc[i] < upper.iloc[i - 1]
-            or close.iloc[i - 1] > upper.iloc[i - 1]
-            else upper.iloc[i - 1]
+            if upper_basic.iloc[i] < prev_upper or prev_close > prev_upper
+            else prev_upper
         )
         lower.iloc[i] = (
             lower_basic.iloc[i]
-            if lower_basic.iloc[i] > lower.iloc[i - 1]
-            or close.iloc[i - 1] < lower.iloc[i - 1]
-            else lower.iloc[i - 1]
+            if lower_basic.iloc[i] > prev_lower or prev_close < prev_lower
+            else prev_lower
         )
 
-    # Direction: 1 = green (bullish), -1 = red (bearish)
-    direction = pd.Series(index=df.index, dtype=int)
-    direction.iloc[period] = 1  # seed
-
-    for i in range(period + 1, len(df)):
-        prev = direction.iloc[i - 1]
-        c = close.iloc[i]
-        if prev == -1 and c > upper.iloc[i]:
-            direction.iloc[i] = 1
-        elif prev == 1 and c < lower.iloc[i]:
-            direction.iloc[i] = -1
+        prev_bullish = bullish.iloc[i - 1]
+        if prev_bullish:
+            bullish.iloc[i] = close.iloc[i] >= lower.iloc[i]
         else:
-            direction.iloc[i] = prev
+            bullish.iloc[i] = close.iloc[i] > upper.iloc[i]
 
-    # Supertrend line value (for display)
-    st_line = pd.Series(index=df.index, dtype=float)
-    for i in range(len(df)):
-        st_line.iloc[i] = lower.iloc[i] if direction.iloc[i] == 1 else upper.iloc[i]
+        st_line.iloc[i] = lower.iloc[i] if bullish.iloc[i] else upper.iloc[i]
 
-    return direction == 1, st_line
+    return bullish, st_line
 
 
 class EverestStrategy(BaseStrategy):
@@ -88,10 +94,12 @@ class EverestStrategy(BaseStrategy):
         "Close breaks above the 13-week high AND "
         "Supertrend(7,3) is green — strong momentum breakout setup."
     )
-    _period_days = 120  # ~91 days for 13W high + buffer for ATR warmup
+    _period_days = 180  # enough trading bars for 13W breakout + indicator warmup
 
     def scan(self, symbol: str, data: pd.DataFrame) -> dict | None:
-        if len(data) < 100:
+        lookback = 65  # ~13 trading weeks
+        min_bars = lookback + 10  # breakout window + ATR warmup margin
+        if len(data) < min_bars:
             return None
 
         close = data["Close"]
@@ -100,7 +108,6 @@ class EverestStrategy(BaseStrategy):
         # ── Condition 1: close > 13-week high (91 calendar days) ──────────
         # We use the last 65 trading days ≈ 13 weeks
         # Exclude today (iloc[-1]) — we want price to BREAK above prior high
-        lookback = 65
         prior_high = high.iloc[-(lookback + 1) : -1].max()
         today_close = float(close.iloc[-1])
 
