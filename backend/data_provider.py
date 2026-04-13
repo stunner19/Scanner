@@ -13,7 +13,8 @@ import logging
 import threading
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from token_manager import get_valid_token, save_token
 
@@ -117,7 +118,11 @@ def fetch_ohlcv(symbol: str, period_days: int = 180) -> pd.DataFrame:
         access_token = get_valid_token()
         instrument_key = _get_instrument_key(symbol)
 
-        to_date = datetime.today()
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+        if now_ist.time() >= time(15, 30):
+            to_date = now_ist.date()
+        else:
+            to_date = (now_ist - timedelta(days=1)).date()
         from_date = to_date - timedelta(days=period_days)
 
         url = (
