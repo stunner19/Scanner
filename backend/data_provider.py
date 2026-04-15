@@ -11,6 +11,7 @@ import os
 import io
 import logging
 import threading
+import time as time_module
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -41,6 +42,12 @@ _http.mount(
 _instrument_cache: dict = {}
 _master_df: pd.DataFrame = None
 _cache_lock = threading.Lock()
+
+# Short-lived OHLCV cache. This helps when the same universe is scanned with
+# multiple strategies in one session, or when users rerun a scan quickly.
+OHLCV_CACHE_TTL = 300  # 5 minutes
+_ohlcv_cache: dict[tuple[str, int, str], tuple[float, pd.DataFrame]] = {}
+_ohlcv_cache_lock = threading.Lock()
 
 
 def _load_instrument_master():
@@ -124,6 +131,12 @@ def fetch_ohlcv(symbol: str, period_days: int = 180) -> pd.DataFrame:
         else:
             to_date = (now_ist - timedelta(days=1)).date()
         from_date = to_date - timedelta(days=period_days)
+        cache_key = (symbol.upper(), period_days, to_date.isoformat())
+
+        with _ohlcv_cache_lock:
+            cached = _ohlcv_cache.get(cache_key)
+            if cached and (time_module.time() - cached[0]) < OHLCV_CACHE_TTL:
+                return cached[1].copy(deep=True)
 
         url = (
             f"{BASE_URL}/historical-candle"
@@ -161,6 +174,9 @@ def fetch_ohlcv(symbol: str, period_days: int = 180) -> pd.DataFrame:
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(how="all")
+
+        with _ohlcv_cache_lock:
+            _ohlcv_cache[cache_key] = (time_module.time(), df.copy(deep=True))
 
         log.info(f"{symbol}: {len(df)} rows")
         return df

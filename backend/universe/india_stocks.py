@@ -39,6 +39,21 @@ _CSV_FILES: dict[str, str] = {
     "Nifty 500": "ind_nifty500list.csv",
 }
 
+# Fast local metadata for the dropdown. This avoids doing live NSE fetches just
+# to show the list of available universes on first page load.
+_UNIVERSE_COUNTS: dict[str, int] = {
+    "Nifty 50": 50,
+    "Nifty Next 50": 50,
+    "Nifty Midcap 50": 50,
+    "Nifty Bank": 12,
+    "Nifty IT": 10,
+    "Nifty Pharma": 20,
+    "Nifty FMCG": 15,
+    "Nifty 100": 100,
+    "Nifty 200": 200,
+    "Nifty 500": 500,
+}
+
 _BASE_URLS = [
     "https://nsearchives.nseindia.com/content/indices",
     "https://www.nseindia.com/content/indices",
@@ -152,3 +167,24 @@ def get_universe(name: str) -> list[str]:
 
 def get_universe_names() -> list[str]:
     return list(_CSV_FILES.keys())
+
+
+def get_universe_catalog() -> list[dict]:
+    catalog: list[dict] = []
+    for name in _CSV_FILES:
+        catalog.append(
+            {
+                "name": name,
+                "count": _UNIVERSE_COUNTS.get(name),
+                "cached": name in _cache,
+            }
+        )
+    return catalog
+
+
+def warm_universe_cache(names: list[str] | None = None):
+    for name in names or get_universe_names():
+        try:
+            get_universe(name)
+        except Exception as exc:
+            log.warning("Universe warmup failed for %s: %s", name, exc)

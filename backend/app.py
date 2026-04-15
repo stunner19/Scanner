@@ -22,7 +22,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 from strategies import get_strategy, get_strategy_list
-from universe import get_universe, get_universe_names
+from universe import (
+    get_universe,
+    get_universe_catalog,
+    get_universe_names,
+    warm_universe_cache,
+)
 from data_provider import exchange_code_for_token, preload_instruments
 from token_manager import get_token_status
 from scan_store import (
@@ -37,6 +42,39 @@ from scan_store import (
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+_warmup_started = False
+_warmup_lock = threading.Lock()
+
+
+def _warm_caches():
+    log.info("Background cache warmup started")
+    try:
+        preload_instruments()
+    except Exception:
+        log.warning("Instrument warmup failed", exc_info=True)
+
+    try:
+        warm_universe_cache()
+    except Exception:
+        log.warning("Universe warmup failed", exc_info=True)
+
+    log.info("Background cache warmup finished")
+
+
+def ensure_background_warmup():
+    global _warmup_started
+
+    if _warmup_started:
+        return
+
+    with _warmup_lock:
+        if _warmup_started:
+            return
+
+        thread = threading.Thread(target=_warm_caches, daemon=True)
+        thread.start()
+        _warmup_started = True
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -121,9 +159,8 @@ def list_strategies():
 
 @app.route("/api/universes")
 def list_universes():
-    return jsonify(
-        [{"name": n, "count": len(get_universe(n))} for n in get_universe_names()]
-    )
+    ensure_background_warmup()
+    return jsonify(get_universe_catalog())
 
 
 # ── Poll-based Scanner ────────────────────────────────────────────────────────
@@ -149,6 +186,7 @@ def _run_scan_background(job_id: str, strategy, tickers: list):
 @app.route("/api/scan/start", methods=["POST"])
 def scan_start():
     """Start a background scan. Returns job_id immediately."""
+    ensure_background_warmup()
     status = get_token_status()
     if not status["valid"] or not status["access_token"]:
         return (
@@ -240,10 +278,13 @@ def scan():
         return jsonify({"error": str(e)}), 500
 
 
+ensure_background_warmup()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     status = get_token_status()
     log.info(f"Starting on http://localhost:{port}")
     log.info(f"Token status: {status['message']}")
-    preload_instruments()
+    ensure_background_warmup()
     app.run(host="0.0.0.0", port=port, debug=True)
