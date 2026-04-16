@@ -121,9 +121,16 @@ def list_strategies():
 
 @app.route("/api/universes")
 def list_universes():
-    return jsonify(
-        [{"name": n, "count": len(get_universe(n))} for n in get_universe_names()]
-    )
+    from concurrent.futures import ThreadPoolExecutor
+    names = get_universe_names()
+
+    def _fetch(name):
+        return {"name": name, "count": len(get_universe(name))}
+
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        results = list(pool.map(_fetch, names))
+
+    return jsonify(results)
 
 
 # ── Poll-based Scanner ────────────────────────────────────────────────────────
@@ -241,17 +248,26 @@ def scan():
 
 
 def _warm_universe_cache():
-    """Pre-fetch all universe lists in the background at startup."""
-    from universe import get_universe, get_universe_names
+    """Pre-fetch all universe lists in parallel so the dropdown is instant."""
+    from concurrent.futures import ThreadPoolExecutor
     names = get_universe_names()
-    log.info(f"Warming universe cache for {len(names)} universes...")
-    for name in names:
+    log.info(f"Warming universe cache for {len(names)} universes in parallel...")
+
+    def _fetch(name):
         try:
             symbols = get_universe(name)
             log.info(f"  {name}: {len(symbols)} symbols cached")
         except Exception as e:
             log.warning(f"  {name}: cache warm failed — {e}")
+
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        list(pool.map(_fetch, names))
     log.info("Universe cache warm complete")
+
+
+# ── Module-level startup — runs under gunicorn AND direct python app.py ───────
+threading.Thread(target=_warm_universe_cache, daemon=True).start()
+preload_instruments()
 
 
 if __name__ == "__main__":
@@ -259,6 +275,4 @@ if __name__ == "__main__":
     status = get_token_status()
     log.info(f"Starting on http://localhost:{port}")
     log.info(f"Token status: {status['message']}")
-    preload_instruments()
-    threading.Thread(target=_warm_universe_cache, daemon=True).start()
     app.run(host="0.0.0.0", port=port, debug=True)
