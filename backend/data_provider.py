@@ -4,11 +4,14 @@ data_provider.py — Fetches OHLCV data from Upstox API v2.
 Optimised for concurrent use:
   - Shared requests.Session with connection pooling (reuses TCP connections)
   - Thread-safe instrument cache loaded once at startup
+  - SQLite OHLCV cache: avoids redundant Upstox calls within the same trading day
   - No artificial delays — Upstox handles concurrent requests fine
 """
 
 import os
 import io
+import json
+import sqlite3
 import logging
 import threading
 import requests
@@ -22,6 +25,73 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 BASE_URL = "https://api.upstox.com/v2"
+
+# ── SQLite OHLCV cache ────────────────────────────────────────────────────────
+_DB_PATH = os.path.join(os.path.dirname(__file__), "ohlcv_cache.db")
+_db_init_done = False
+_db_init_lock = threading.Lock()
+
+
+def _init_ohlcv_db():
+    global _db_init_done
+    if _db_init_done:
+        return
+    with _db_init_lock:
+        if _db_init_done:
+            return
+        with sqlite3.connect(_DB_PATH) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ohlcv_cache (
+                    symbol      TEXT NOT NULL,
+                    as_of_date  TEXT NOT NULL,
+                    fetched_at  TEXT NOT NULL,
+                    candles_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, as_of_date)
+                )
+            """)
+            conn.commit()
+        _db_init_done = True
+
+
+def _cache_get(symbol: str, as_of_date: str) -> pd.DataFrame | None:
+    _init_ohlcv_db()
+    try:
+        with sqlite3.connect(_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT candles_json FROM ohlcv_cache WHERE symbol=? AND as_of_date=?",
+                (symbol, as_of_date),
+            ).fetchone()
+        if not row:
+            return None
+        candles = json.loads(row[0])
+        df = pd.DataFrame(candles, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna(how="all")
+    except Exception as e:
+        log.warning(f"OHLCV cache read error for {symbol}: {e}")
+        return None
+
+
+def _cache_set(symbol: str, as_of_date: str, df: pd.DataFrame):
+    _init_ohlcv_db()
+    try:
+        df_reset = df.reset_index()
+        df_reset["Date"] = df_reset["Date"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+        candles = df_reset[["Date", "Open", "High", "Low", "Close", "Volume"]].values.tolist()
+        fetched_at = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+        with sqlite3.connect(_DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv_cache (symbol, as_of_date, fetched_at, candles_json) "
+                "VALUES (?, ?, ?, ?)",
+                (symbol, as_of_date, fetched_at, json.dumps(candles)),
+            )
+            conn.commit()
+    except Exception as e:
+        log.warning(f"OHLCV cache write error for {symbol}: {e}")
 
 # ── Shared HTTP session with connection pooling ───────────────────────────────
 # Reuses TCP connections across threads — much faster than requests.get()
@@ -112,17 +182,26 @@ def _get_instrument_key(symbol: str) -> str:
 def fetch_ohlcv(symbol: str, period_days: int = 180) -> pd.DataFrame:
     """
     Fetch daily OHLCV for one NSE symbol.
-    Thread-safe — uses shared session with connection pooling.
+    Checks SQLite cache first — only calls Upstox if data for today's as_of_date
+    is missing. Thread-safe — uses shared session with connection pooling.
     """
     try:
-        access_token = get_valid_token()
-        instrument_key = _get_instrument_key(symbol)
-
         now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
         if now_ist.time() >= time(15, 30):
             to_date = now_ist.date()
         else:
             to_date = (now_ist - timedelta(days=1)).date()
+
+        # ── Cache check ───────────────────────────────────────────────────────
+        as_of_date = to_date.strftime("%Y-%m-%d")
+        cached = _cache_get(symbol, as_of_date)
+        if cached is not None and not cached.empty:
+            log.debug(f"{symbol}: cache hit ({as_of_date})")
+            return cached
+
+        access_token = get_valid_token()
+        instrument_key = _get_instrument_key(symbol)
+
         from_date = to_date - timedelta(days=period_days)
 
         url = (
@@ -162,7 +241,8 @@ def fetch_ohlcv(symbol: str, period_days: int = 180) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(how="all")
 
-        log.info(f"{symbol}: {len(df)} rows")
+        log.info(f"{symbol}: {len(df)} rows (fetched from Upstox)")
+        _cache_set(symbol, as_of_date, df)
         return df
 
     except EnvironmentError:

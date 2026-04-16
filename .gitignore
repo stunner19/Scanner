@@ -16,3 +16,7 @@ backend/config.json
 
 # Logs
 *.log
+
+# Runtime caches (generated at runtime, not stored in git)
+backend/ohlcv_cache.db
+backend/universe_cache/

@@ -240,10 +240,25 @@ def scan():
         return jsonify({"error": str(e)}), 500
 
 
+def _warm_universe_cache():
+    """Pre-fetch all universe lists in the background at startup."""
+    from universe import get_universe, get_universe_names
+    names = get_universe_names()
+    log.info(f"Warming universe cache for {len(names)} universes...")
+    for name in names:
+        try:
+            symbols = get_universe(name)
+            log.info(f"  {name}: {len(symbols)} symbols cached")
+        except Exception as e:
+            log.warning(f"  {name}: cache warm failed — {e}")
+    log.info("Universe cache warm complete")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     status = get_token_status()
     log.info(f"Starting on http://localhost:{port}")
     log.info(f"Token status: {status['message']}")
     preload_instruments()
+    threading.Thread(target=_warm_universe_cache, daemon=True).start()
     app.run(host="0.0.0.0", port=port, debug=True)

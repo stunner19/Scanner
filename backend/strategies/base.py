@@ -1,19 +1,14 @@
 """
-BaseStrategy — rate-limit-aware concurrent scanning.
+BaseStrategy — concurrent scanning engine.
 
 Upstox limits: 25 req/sec, 250 req/min, 1000 req/30min.
 
-Strategy:
-  - 20 workers (safe concurrency level)
-  - 45ms stagger between each future submission so we never
-    burst more than 22 requests in any given second
-  - No arbitrary timeouts — requests are allowed to complete naturally
-    since Upstox will respond once it's not being hammered
-
-Expected time for 500 stocks: ~25-30 seconds
+With the SQLite OHLCV cache in data_provider, most scans hit local disk and
+complete in milliseconds — no Upstox calls needed after the first run each day.
+On a cold cache, 20 workers naturally throttle to ~13 req/s (well under 25/s
+limit), so no artificial stagger is needed.
 """
 
-import time
 import logging
 import pandas as pd
 from abc import ABC, abstractmethod
@@ -23,7 +18,6 @@ from data_provider import fetch_ohlcv
 log = logging.getLogger(__name__)
 
 MAX_WORKERS = 20  # concurrent threads
-SUBMIT_STAGGER_MS = 45  # ms between each future submission (~22 req/s max burst)
 
 
 class BaseStrategy(ABC):
@@ -51,22 +45,16 @@ class BaseStrategy(ABC):
     def run_stream(self, tickers: list):
         """
         Yields progress/match events as stocks complete.
-        Staggers submissions to respect Upstox 25 req/sec rate limit.
+        No stagger needed — OHLCV cache handles rate limiting naturally.
         """
         symbols = [t.replace(".NS", "").replace(".BO", "") for t in tickers]
         total = len(symbols)
         completed = 0
 
-        log.info(
-            f"Scanning {total} stocks — {MAX_WORKERS} workers, "
-            f"{SUBMIT_STAGGER_MS}ms stagger (~{1000//SUBMIT_STAGGER_MS} req/s max)"
-        )
+        log.info(f"Scanning {total} stocks — {MAX_WORKERS} workers")
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = {}
-            for sym in symbols:
-                futures[executor.submit(self._fetch_and_scan, sym)] = sym
-                time.sleep(SUBMIT_STAGGER_MS / 1000)  # stagger submissions
+            futures = {executor.submit(self._fetch_and_scan, sym): sym for sym in symbols}
 
             for future in as_completed(futures):
                 sym = futures[future]

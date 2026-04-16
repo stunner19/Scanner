@@ -16,15 +16,22 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
 import time
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 import requests
 
 log = logging.getLogger(__name__)
 
-CACHE_TTL = 3600  # 1 hour
-REQUEST_TIMEOUT = 20
+CACHE_TTL = 3600          # 1 hour in-memory TTL
+DISK_CACHE_TTL = 86400    # 24 hours disk TTL
+REQUEST_TIMEOUT = 8       # reduced — we try 3 URLs in parallel now
+
+_CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "universe_cache")
 
 _CSV_FILES: dict[str, str] = {
     "Nifty 50": "ind_nifty50list.csv",
@@ -106,26 +113,77 @@ def _parse_constituents(csv_text: str, index_name: str) -> list[str]:
     return symbols
 
 
+def _disk_cache_path(index_name: str) -> str:
+    safe = index_name.replace(" ", "_").lower()
+    return os.path.join(_CACHE_DIR, f"{safe}.json")
+
+
+def _load_disk_cache(index_name: str) -> list[str] | None:
+    path = _disk_cache_path(index_name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        fetched_at = datetime.fromisoformat(data["fetched_at"])
+        age = (datetime.now() - fetched_at).total_seconds()
+        if age < DISK_CACHE_TTL:
+            log.info("%s: disk cache hit (%.0fh old)", index_name, age / 3600)
+            return data["symbols"]
+    except Exception as e:
+        log.warning("%s: disk cache read error — %s", index_name, e)
+    return None
+
+
+def _save_disk_cache(index_name: str, symbols: list[str]):
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    path = _disk_cache_path(index_name)
+    try:
+        with open(path, "w") as f:
+            json.dump({"fetched_at": datetime.now().isoformat(), "symbols": symbols}, f)
+    except Exception as e:
+        log.warning("%s: disk cache write error — %s", index_name, e)
+
+
+def _fetch_one_url(url: str, index_name: str) -> list[str]:
+    resp = _session.get(url, timeout=REQUEST_TIMEOUT)
+    log.info("%s: NSE CSV %s -> HTTP %s", index_name, url, resp.status_code)
+    resp.raise_for_status()
+    return _parse_constituents(resp.text, index_name)
+
+
 def _fetch_csv(index_name: str) -> list[str]:
     filename = _CSV_FILES.get(index_name)
     if not filename:
         return []
 
+    # Check disk cache before hitting NSE
+    cached = _load_disk_cache(index_name)
+    if cached:
+        return cached
+
+    # Try all 3 NSE base URLs in parallel — take the first successful result
+    urls = [f"{base}/{filename}" for base in _BASE_URLS]
+    symbols: list[str] = []
     errors: list[str] = []
-    for base_url in _BASE_URLS:
-        url = f"{base_url}/{filename}"
-        try:
-            resp = _session.get(url, timeout=REQUEST_TIMEOUT)
-            log.info("%s: NSE CSV %s -> HTTP %s", index_name, url, resp.status_code)
-            resp.raise_for_status()
 
-            symbols = _parse_constituents(resp.text, index_name)
-            if symbols:
-                return symbols
+    with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+        futures = {pool.submit(_fetch_one_url, url, index_name): url for url in urls}
+        for future in as_completed(futures):
+            url = futures[future]
+            try:
+                result = future.result()
+                if result and not symbols:
+                    symbols = result
+                    # Cancel remaining if possible (best-effort)
+                    for f in futures:
+                        f.cancel()
+            except Exception as exc:
+                errors.append(f"{url}: {type(exc).__name__}: {exc}")
 
-            errors.append(f"{url} returned no symbols")
-        except Exception as exc:
-            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+    if symbols:
+        _save_disk_cache(index_name, symbols)
+        return symbols
 
     log.error("%s: failed to fetch NSE constituents. %s", index_name, " | ".join(errors))
     return []
