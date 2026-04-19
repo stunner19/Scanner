@@ -1,9 +1,12 @@
 """
 Advanced Everest Strategy
 Daily timeframe:
-  1. Today's close > highest high of the previous 13 weeks (91 calendar days)
+  1. Today's close > highest high of the previous 13 weeks (65 trading days)
      — excludes today so we're breaking OUT above prior resistance
   2. Supertrend(7, 3) is currently green (price above supertrend line)
+  3. This is the FIRST bar where both (1) and (2) are simultaneously true —
+     i.e. the signal has never fired before in this green phase.
+     Supertrend must also have been red at some prior point (not always green).
 
 Supertrend calculation:
   - ATR period  : 7
@@ -105,42 +108,53 @@ class EverestStrategy(BaseStrategy):
         close = data["Close"]
         high = data["High"]
 
-        # ── Condition 1: close > 13-week high (91 calendar days) ──────────
-        # We use the last 65 trading days ≈ 13 weeks
-        # Exclude today (iloc[-1]) — we want price to BREAK above prior high
-        prior_high = high.iloc[-(lookback + 1) : -1].max()
-        today_close = float(close.iloc[-1])
-
-        broke_out = today_close > float(prior_high)
-        if not broke_out:
-            return None
-
-        # ── Condition 2: Supertrend(7, 3) is green ────────────────────────
+        # ── Condition 2: compute full Supertrend series ───────────────────
         is_green, st_line = _supertrend(data, period=7, multiplier=3.0)
 
+        # Supertrend must be green today
         if not bool(is_green.iloc[-1]):
             return None
 
-        # ── Build result ──────────────────────────────────────────────────
-        st_val = round(float(st_line.iloc[-1]), 2)
-        pct_above_st = round(((today_close - st_val) / st_val) * 100, 2)
-        pct_breakout = round(
-            ((today_close - float(prior_high)) / float(prior_high)) * 100, 2
-        )
+        # Supertrend must have been red at some prior point — if it has been
+        # green the entire history we have no meaningful "first flip" anchor
+        if not bool((~is_green).any()):
+            return None
 
-        # Check if supertrend flipped green today (fresh signal = stronger)
-        flipped_today = bool(is_green.iloc[-1]) and not bool(is_green.iloc[-2])
-        strength = "Strong" if flipped_today or pct_breakout > 1.0 else "Moderate"
+        # ── Condition 1: rolling 13W high per bar ─────────────────────────
+        # shift(1) so each bar's "prior high" excludes itself
+        rolling_high = high.shift(1).rolling(lookback).max()
+
+        above_high_series = close > rolling_high
+
+        # ── Condition 3: today is the FIRST bar where both are true ───────
+        both_true = is_green & above_high_series
+
+        if not bool(both_true.iloc[-1]):
+            return None
+
+        if bool(both_true.iloc[:-1].any()):
+            return None  # signal already fired on a prior bar
+
+        # ── Build result ──────────────────────────────────────────────────
+        today_close = float(close.iloc[-1])
+        prior_high = float(rolling_high.iloc[-1])
+        st_val = round(float(st_line.iloc[-1]), 2)
+
+        pct_above_st = round(((today_close - st_val) / st_val) * 100, 2)
+        pct_breakout = round(((today_close - prior_high) / prior_high) * 100, 2)
+
+        flipped_today = not bool(is_green.iloc[-2])
+        strength = "Strong" if flipped_today else "Moderate"
 
         return {
             "ticker": symbol,
             "price": round(today_close, 2),
             "change_pct": self._price_change(close),
-            "signal": f"Everest Breakout +{pct_breakout}% above 13W high",
+            "signal": f"First Everest signal +{pct_breakout}% above 13W high",
             "strength": strength,
             "metric_label": "Above ST(7,3)",
             "metric_value": f"+{pct_above_st}%",
-            "week13_high": round(float(prior_high), 2),
+            "week13_high": round(prior_high, 2),
             "supertrend": st_val,
             "st_flipped": flipped_today,
             "pct_breakout": pct_breakout,
