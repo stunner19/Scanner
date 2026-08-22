@@ -94,8 +94,8 @@ def _supertrend(
 class EverestStrategy(BaseStrategy):
     name = "Advanced Everest"
     description = (
-        "Close breaks above the 13-week high AND "
-        "Supertrend(7,3) is green — strong momentum breakout setup."
+        "Close breaks above the 13-week high on the same bar Supertrend(7,3) "
+        "just flips from red to green — strong momentum breakout setup."
     )
     _period_days = 180  # enough trading bars for 13W breakout + indicator warmup
 
@@ -118,6 +118,12 @@ class EverestStrategy(BaseStrategy):
         # Supertrend must have been red at some prior point — if it has been
         # green the entire history we have no meaningful "first flip" anchor
         if not bool((~is_green).any()):
+            return None
+
+        # Supertrend must have JUST flipped from red to green on today's bar —
+        # exclude stocks that break out above the 13W high while supertrend
+        # has already been green for a while
+        if bool(is_green.iloc[-2]):
             return None
 
         # ── Condition 1: rolling 13W high per bar ─────────────────────────
@@ -143,19 +149,16 @@ class EverestStrategy(BaseStrategy):
         pct_above_st = round(((today_close - st_val) / st_val) * 100, 2)
         pct_breakout = round(((today_close - prior_high) / prior_high) * 100, 2)
 
-        flipped_today = not bool(is_green.iloc[-2])
-        strength = "Strong" if flipped_today else "Moderate"
-
         return {
             "ticker": symbol,
             "price": round(today_close, 2),
             "change_pct": self._price_change(close),
             "signal": f"First Everest signal +{pct_breakout}% above 13W high",
-            "strength": strength,
+            "strength": "Strong",
             "metric_label": "Above ST(7,3)",
             "metric_value": f"+{pct_above_st}%",
             "week13_high": round(prior_high, 2),
             "supertrend": st_val,
-            "st_flipped": flipped_today,
+            "st_flipped": True,
             "pct_breakout": pct_breakout,
         }
