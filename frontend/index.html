@@ -97,9 +97,88 @@
     /* ══ HEADER ══════════════════════════════════════════════════════════════ */
     header {
       padding: 44px 0 36px;
+      position: relative;
+    }
+
+    /* ══ TABS ══════════════════════════════════════════════════════════════ */
+    .tabs {
+      display: flex;
+      gap: 4px;
       border-bottom: 1px solid var(--border);
       margin-bottom: 40px;
-      position: relative;
+    }
+
+    .tab-link {
+      padding: 12px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-2);
+      text-decoration: none;
+      border-bottom: 2px solid transparent;
+      transform: translateY(1px);
+      transition: color .15s, border-color .15s;
+    }
+
+    .tab-link:hover {
+      color: var(--text);
+    }
+
+    .tab-link.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    /* ══ VIEWS ══════════════════════════════════════════════════════════════ */
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    /* ══ BACKTEST ══════════════════════════════════════════════════════════════ */
+    .backtest-layout {
+      display: flex;
+      gap: 32px;
+      align-items: flex-start;
+    }
+
+    .backtest-nav {
+      flex: 0 0 220px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .backtest-nav-link {
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--text-2);
+      text-decoration: none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .backtest-nav-link:last-child {
+      border-bottom: none;
+    }
+
+    .backtest-nav-link:hover {
+      color: var(--text);
+      background: var(--accent-dim);
+    }
+
+    .backtest-nav-link.active {
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .backtest-content {
+      flex: 1;
+      min-width: 0;
     }
 
     .header-inner {
@@ -965,78 +1044,105 @@
       </div>
     </header>
 
-    <!-- ── UPSTOX AUTH PANEL ── -->
-    <div class="auth-panel" id="authPanel">
-      <div class="auth-status">
-        <div class="auth-dot warning" id="authDot"></div>
-        <span id="authMsg" style="color:var(--text-2)">Checking Upstox token...</span>
-      </div>
-      <div class="auth-right" id="authControls">
-        <span style="font-size:11px;color:var(--text-3)">One-time setup required</span>
-        <a class="auth-btn primary" id="loginLink" href="#" target="_blank">
-          Login with Upstox ↗
-        </a>
-      </div>
-    </div>
+    <!-- ── TABS ── -->
+    <nav class="tabs" id="tabs">
+      <a class="tab-link" id="tabScanner" href="#/scanner">Scanner</a>
+      <a class="tab-link" id="tabBacktest" href="#/backtest">Backtest Results</a>
+    </nav>
 
-    <!-- ── SCANNER PANEL ── -->
-    <div class="panel">
-      <div class="panel-label">Scanner Configuration</div>
+    <!-- ── SCANNER VIEW ── -->
+    <div class="view" id="view-scanner">
 
-      <div class="controls-row">
-        <!-- Strategy selector -->
-        <div class="field">
-          <label class="field-label" for="strategySelect">Strategy</label>
-          <select id="strategySelect">
-            <option value="">── Select strategy ──</option>
-          </select>
-          <div class="strategy-info" id="strategyInfo"></div>
+      <!-- ── UPSTOX AUTH PANEL ── -->
+      <div class="auth-panel" id="authPanel">
+        <div class="auth-status">
+          <div class="auth-dot warning" id="authDot"></div>
+          <span id="authMsg" style="color:var(--text-2)">Checking Upstox token...</span>
         </div>
-
-        <!-- Universe selector -->
-        <div class="field">
-          <label class="field-label" for="universeSelect">Stock Universe</label>
-          <select id="universeSelect">
-            <option value="">── Select universe ──</option>
-          </select>
+        <div class="auth-right" id="authControls">
+          <span style="font-size:11px;color:var(--text-3)">One-time setup required</span>
+          <a class="auth-btn primary" id="loginLink" href="#" target="_blank">
+            Login with Upstox ↗
+          </a>
         </div>
       </div>
 
-      <!-- Scan button -->
-      <button class="scan-btn" id="scanBtn" disabled onclick="runScan()">
-        ▶ &nbsp;Run Scanner
-      </button>
-    </div>
+      <!-- ── SCANNER PANEL ── -->
+      <div class="panel">
+        <div class="panel-label">Scanner Configuration</div>
 
-    <div class="error-box" id="errorBox"></div>
+        <div class="controls-row">
+          <!-- Strategy selector -->
+          <div class="field">
+            <label class="field-label" for="strategySelect">Strategy</label>
+            <select id="strategySelect">
+              <option value="">── Select strategy ──</option>
+            </select>
+            <div class="strategy-info" id="strategyInfo"></div>
+          </div>
 
-    <!-- Status -->
-    <div class="status-bar">
-      <div class="status-left">
-        <div class="spinner" id="spinner"></div>
-        <span id="statusMsg" style="color:var(--text-3);font-size:12px">
-          Select a strategy and universe to begin.
-        </span>
+          <!-- Universe selector -->
+          <div class="field">
+            <label class="field-label" for="universeSelect">Stock Universe</label>
+            <select id="universeSelect">
+              <option value="">── Select universe ──</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Scan button -->
+        <button class="scan-btn" id="scanBtn" disabled onclick="runScan()">
+          ▶ &nbsp;Run Scanner
+        </button>
       </div>
-      <span class="scan-time" id="scanTime"></span>
-    </div>
 
-    <!-- Progress bar — sits between status bar and results -->
-    <div class="progress-wrap" id="progressWrap">
-      <div class="progress-bar-track">
-        <div class="progress-bar-fill" id="progressFill"></div>
-      </div>
-      <div class="progress-label" id="progressLabel"></div>
-    </div>
+      <div class="error-box" id="errorBox"></div>
 
-    <!-- Results -->
-    <div class="results-box" id="resultsBox">
-      <div class="empty-state">
-        <div class="empty-icon">◈</div>
-        <div class="empty-title">No scan running</div>
-        <div class="empty-hint">Configure strategy and universe above, then click Run Scanner</div>
+      <!-- Status -->
+      <div class="status-bar">
+        <div class="status-left">
+          <div class="spinner" id="spinner"></div>
+          <span id="statusMsg" style="color:var(--text-3);font-size:12px">
+            Select a strategy and universe to begin.
+          </span>
+        </div>
+        <span class="scan-time" id="scanTime"></span>
       </div>
-    </div>
+
+      <!-- Progress bar — sits between status bar and results -->
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-label" id="progressLabel"></div>
+      </div>
+
+      <!-- Results -->
+      <div class="results-box" id="resultsBox">
+        <div class="empty-state">
+          <div class="empty-icon">◈</div>
+          <div class="empty-title">No scan running</div>
+          <div class="empty-hint">Configure strategy and universe above, then click Run Scanner</div>
+        </div>
+      </div>
+
+    </div><!-- /view-scanner -->
+
+    <!-- ── BACKTEST VIEW ── -->
+    <div class="view" id="view-backtest">
+      <div class="backtest-layout">
+        <nav class="backtest-nav" id="backtestNav">
+          <!-- populated from /api/strategies -->
+        </nav>
+        <div class="backtest-content" id="backtestContent">
+          <div class="empty-state">
+            <div class="empty-icon">◈</div>
+            <div class="empty-title">Select a strategy</div>
+            <div class="empty-hint">Pick a strategy on the left to view its backtest results</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /view-backtest -->
 
     <!-- Footer -->
     <footer>
@@ -1075,6 +1181,69 @@
 
       $('strategySelect').addEventListener('change', onStrategyChange);
       $('universeSelect').addEventListener('change', checkReady);
+
+      buildBacktestNav();
+      window.addEventListener('hashchange', handleRoute);
+      handleRoute();
+    }
+
+    /* ── Routing ── */
+    function slugify(name) {
+      return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    }
+
+    function buildBacktestNav() {
+      const nav = $('backtestNav');
+      nav.innerHTML = '';
+      strategies.forEach(s => {
+        const a = document.createElement('a');
+        a.className = 'backtest-nav-link';
+        a.href = `#/backtest/${slugify(s.name)}`;
+        a.textContent = s.name;
+        nav.appendChild(a);
+      });
+    }
+
+    function renderBacktestStrategy(slug) {
+      const s = strategies.find(x => slugify(x.name) === slug);
+
+      document.querySelectorAll('#backtestNav .backtest-nav-link').forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === `#/backtest/${slug}`);
+      });
+
+      const content = $('backtestContent');
+      if (!s) {
+        content.innerHTML = emptyState('Strategy not found', 'Pick a strategy on the left to view its backtest results');
+        return;
+      }
+
+      content.innerHTML = `
+        <div class="panel-label">${s.name}</div>
+        <p style="color:var(--text-2);font-size:13px;margin-bottom:16px">${s.description}</p>
+        ${emptyState('Backtest results coming soon', "This strategy's historical performance will be shown here")}
+      `;
+    }
+
+    function handleRoute() {
+      const hash = location.hash || '#/scanner';
+      const parts = hash.replace(/^#\//, '').split('/');
+      const tab = parts[0] || 'scanner';
+      const isBacktest = tab === 'backtest';
+
+      $('view-scanner').classList.toggle('active', !isBacktest);
+      $('view-backtest').classList.toggle('active', isBacktest);
+      $('tabScanner').classList.toggle('active', !isBacktest);
+      $('tabBacktest').classList.toggle('active', isBacktest);
+
+      if (isBacktest) {
+        const slug = parts[1];
+        if (slug) {
+          renderBacktestStrategy(slug);
+        } else {
+          document.querySelectorAll('#backtestNav .backtest-nav-link').forEach(a => a.classList.remove('active'));
+          $('backtestContent').innerHTML = emptyState('Select a strategy', 'Pick a strategy on the left to view its backtest results');
+        }
+      }
     }
 
     /* ── Loaders ── */
