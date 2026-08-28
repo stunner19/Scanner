@@ -8,6 +8,7 @@ from .volume_surge import VolumeSurgeStrategy
 from .ema_pullback import EMAPullbackStrategy
 from .everest import EverestStrategy
 from .sma34_pullback import SMA34PullbackStrategy
+from .sleeve1_52w_volume import Sleeve1Strategy
 
 STRATEGIES: dict = {
     s.name: s
@@ -20,6 +21,7 @@ STRATEGIES: dict = {
         EMAPullbackStrategy(),
         EverestStrategy(),
         SMA34PullbackStrategy(),
+        Sleeve1Strategy(),
     ]
 }
 
