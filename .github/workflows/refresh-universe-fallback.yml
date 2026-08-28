@@ -1,0 +1,46 @@
+name: Refresh universe fallback CSVs
+
+# NSE frequently blocks/rate-limits requests from cloud datacenter IPs
+# (including Render's), so the live scanner sometimes can't fetch index
+# constituent lists. backend/universe/india_stocks.py falls back to the
+# bundled, git-tracked CSVs in backend/universe/fallback/ when that
+# happens. This workflow keeps those snapshots from going stale by
+# re-fetching from NSE (GitHub-hosted runners aren't blocked the same
+# way) and committing any changes.
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # every Sunday, 03:00 UTC (~08:30 IST)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Refresh fallback CSVs
+        working-directory: backend
+        run: python refresh_universe_fallback.py
+
+      - name: Commit changes if any
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- backend/universe/fallback; then
+            echo "No changes to universe fallback CSVs"
+          else
+            git add backend/universe/fallback
+            git commit -m "chore: refresh universe fallback CSVs"
+            git push
+          fi

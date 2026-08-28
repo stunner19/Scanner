@@ -33,6 +33,11 @@ REQUEST_TIMEOUT = 8       # reduced — we try 3 URLs in parallel now
 
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "universe_cache")
 
+# Bundled, git-tracked snapshots used when NSE is unreachable (e.g. blocking
+# requests from the cloud host's IP) and no fresh disk cache exists yet.
+# Refreshed on a schedule — see refresh_universe_fallback.py.
+_FALLBACK_DIR = os.path.join(os.path.dirname(__file__), "fallback")
+
 _CSV_FILES: dict[str, str] = {
     "Nifty 50": "ind_nifty50list.csv",
     "Nifty Next 50": "ind_niftynext50list.csv",
@@ -152,6 +157,47 @@ def _fetch_one_url(url: str, index_name: str) -> list[str]:
     return _parse_constituents(resp.text, index_name)
 
 
+def fetch_raw_csv(index_name: str) -> str | None:
+    """
+    Fetch raw NSE CSV text for one index, trying all base URLs in turn.
+    Used by refresh_universe_fallback.py to update the bundled fallback
+    snapshots — not used on the request path.
+    """
+    filename = _CSV_FILES.get(index_name)
+    if not filename:
+        return None
+    for base in _BASE_URLS:
+        url = f"{base}/{filename}"
+        try:
+            resp = _session.get(url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            if resp.text.strip():
+                return resp.text
+        except Exception as e:
+            log.warning("%s: %s -> %s", index_name, url, e)
+    return None
+
+
+def _fallback_path(index_name: str) -> str:
+    safe = index_name.replace(" ", "_").lower()
+    return os.path.join(_FALLBACK_DIR, f"{safe}.csv")
+
+
+def _load_fallback(index_name: str) -> list[str]:
+    path = _fallback_path(index_name)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            symbols = _parse_constituents(f.read(), index_name)
+        if symbols:
+            log.warning("%s: NSE unreachable — serving bundled fallback snapshot (%d symbols)", index_name, len(symbols))
+        return symbols
+    except Exception as e:
+        log.warning("%s: fallback read error — %s", index_name, e)
+        return []
+
+
 def _fetch_csv(index_name: str) -> list[str]:
     filename = _CSV_FILES.get(index_name)
     if not filename:
@@ -186,7 +232,7 @@ def _fetch_csv(index_name: str) -> list[str]:
         return symbols
 
     log.error("%s: failed to fetch NSE constituents. %s", index_name, " | ".join(errors))
-    return []
+    return _load_fallback(index_name)
 
 
 def get_universe(name: str) -> list[str]:
