@@ -1302,16 +1302,16 @@
 
       hideError();
       setLoading(true);
-      $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Waking up server…</span>`;
+      $('statusMsg').innerHTML = `<span style="color:var(--text-2)">Waking up server… (can take up to a minute if it's been idle)</span>`;
       $('scanTime').textContent = '';
       $('resultsBox').innerHTML = emptyState('Scanning…', `Running ${strategy} across ${universe}`);
 
-      // Wake up Render free tier first
+      // Wake up Render free tier first — cold start can take 30-50s+
       try {
-        const ping = await fetch(`${BACKEND}/api/health`, { signal: AbortSignal.timeout(30000) });
+        const ping = await fetch(`${BACKEND}/api/health`, { signal: AbortSignal.timeout(75000) });
         if (!ping.ok) throw new Error(`Server returned ${ping.status}`);
       } catch (e) {
-        showError(`Cannot reach backend — ${e.message}`);
+        showError(`Cannot reach backend — ${e.message}. The server may be a cold Render free-tier instance; wait a moment and try again.`);
         clearProgress();
         setLoading(false);
         return;
