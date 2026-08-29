@@ -1167,9 +1167,64 @@
       : PROD_URL;
 
     /* ───────────────────────────────────────────────────────────── */
-    let strategies = [];
+    // Static snapshots so the scanner is usable instantly on page load —
+    // no need to wait on a (possibly cold) backend just to populate two
+    // dropdowns. Refreshed silently in the background after first paint;
+    // keep this in sync when strategies/universes change on the backend.
+    const STATIC_STRATEGIES = [
+      { name: "RSI Oversold", description: "Stocks where RSI(14) has dropped below 35 — oversold, potential bounce candidates." },
+      { name: "MACD Bullish Crossover", description: "Stocks where MACD line crossed above its Signal line in the last 3 sessions." },
+      { name: "Golden Cross (50/200 SMA)", description: "Stocks where the 50-day SMA crossed above 200-day SMA — classic long-term bull signal." },
+      { name: "52-Week High Breakout", description: "Stocks trading within 2% of their 52-week high — momentum breakout candidates." },
+      { name: "Volume Surge", description: "Stocks with 3× or more their 20-day average volume + 1.5%+ price move — institutional activity." },
+      { name: "EMA Pullback (Trend Dip)", description: "Stocks in an uptrend (above 50 EMA) pulling back to the 20 EMA — buy-the-dip setup." },
+      { name: "Advanced Everest", description: "Close breaks above the 13-week high on the same bar Supertrend(7,3) just flips from red to green — strong momentum breakout setup." },
+      { name: "34 SMA Pullback", description: "Stocks in an uptrend whose daily candle touches the 34 SMA and closes back above it — trend pullback continuation setup." },
+      { name: "Sleeve 1 — 52-Week-High + Volume", description: "Weekly (Friday close) rotation across liquid Nifty 500 names in a confirmed uptrend, ranked by proximity to the 52-week high blended with rising volume — gated by market-wide breadth." },
+      { name: "Sleeve 2 — Momentum Ignition", description: "Weekly (Friday close) rotation across liquid Nifty 500 names in a confirmed uptrend, ranked by 63-day return blended with its acceleration versus the prior 63-day period." },
+    ];
+    const STATIC_UNIVERSES = [
+      { name: "Nifty 50", count: 50 },
+      { name: "Nifty Next 50", count: 50 },
+      { name: "Nifty Midcap 50", count: 50 },
+      { name: "Nifty Bank", count: 14 },
+      { name: "Nifty IT", count: 10 },
+      { name: "Nifty Pharma", count: 20 },
+      { name: "Nifty FMCG", count: 15 },
+      { name: "Nifty 100", count: 100 },
+      { name: "Nifty 200", count: 200 },
+      { name: "Nifty 500", count: 500 },
+    ];
+
+    let strategies = STATIC_STRATEGIES;
 
     function $(id) { return document.getElementById(id); }
+
+    function populateStrategySelect(list) {
+      const sel = $('strategySelect');
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">── Select strategy ──</option>';
+      list.forEach(s => {
+        const o = document.createElement('option');
+        o.value = s.name;
+        o.textContent = s.name;
+        sel.appendChild(o);
+      });
+      if (list.some(s => s.name === prev)) sel.value = prev;
+    }
+
+    function populateUniverseSelect(list) {
+      const sel = $('universeSelect');
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">── Select universe ──</option>';
+      list.forEach(u => {
+        const o = document.createElement('option');
+        o.value = u.name;
+        o.textContent = `${u.name}  (${u.count} stocks)`;
+        sel.appendChild(o);
+      });
+      if (list.some(u => u.name === prev)) sel.value = prev;
+    }
 
     async function init() {
       // Set date
@@ -1177,20 +1232,43 @@
         weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
       });
 
-      // Show the page immediately — don't block first paint on backend calls,
-      // which can take 20-50s+ on a cold Render free-tier instance.
+      // Populate immediately from the static snapshot — no backend round
+      // trip needed just to make the scanner usable.
       window.addEventListener('hashchange', handleRoute);
+      populateStrategySelect(STATIC_STRATEGIES);
+      populateUniverseSelect(STATIC_UNIVERSES);
+      buildBacktestNav();
       handleRoute();
 
       $('strategySelect').addEventListener('change', onStrategyChange);
       $('universeSelect').addEventListener('change', checkReady);
 
-      await Promise.all([loadStrategies(), loadUniverses()]);
+      // Best-effort background refresh, so a new strategy/universe added
+      // on the backend shows up without needing a frontend redeploy.
+      // Never blocks first paint or interactivity.
+      refreshListsInBackground();
+    }
 
-      buildBacktestNav();
-      // Re-run in case the user landed on/navigated to #/backtest/<slug>
-      // before the strategy list (needed to resolve the slug) had loaded.
-      handleRoute();
+    async function refreshListsInBackground() {
+      try {
+        const [sRes, uRes] = await Promise.all([
+          fetch(`${BACKEND}/api/strategies`),
+          fetch(`${BACKEND}/api/universes`),
+        ]);
+        if (sRes.ok) {
+          const fresh = await sRes.json();
+          if (fresh.length) {
+            strategies = fresh;
+            populateStrategySelect(fresh);
+            buildBacktestNav();
+            handleRoute();
+          }
+        }
+        if (uRes.ok) {
+          const fresh = await uRes.json();
+          if (fresh.length) populateUniverseSelect(fresh);
+        }
+      } catch { /* static snapshot already loaded — nothing to do */ }
     }
 
     /* ── Routing ── */
@@ -1250,37 +1328,6 @@
           $('backtestContent').innerHTML = emptyState('Select a strategy', 'Pick a strategy on the left to view its backtest results');
         }
       }
-    }
-
-    /* ── Loaders ── */
-    async function loadStrategies() {
-      try {
-        const r = await fetch(`${BACKEND}/api/strategies`);
-        strategies = await r.json();
-        const sel = $('strategySelect');
-        strategies.forEach(s => {
-          const o = document.createElement('option');
-          o.value = s.name;
-          o.textContent = s.name;
-          sel.appendChild(o);
-        });
-      } catch {
-        showError(`Cannot reach backend at ${BACKEND}. Check that Flask is running and LOCAL_PORT matches (currently ${LOCAL_PORT}).`);
-      }
-    }
-
-    async function loadUniverses() {
-      try {
-        const r = await fetch(`${BACKEND}/api/universes`);
-        const us = await r.json();
-        const sel = $('universeSelect');
-        us.forEach(u => {
-          const o = document.createElement('option');
-          o.value = u.name;
-          o.textContent = `${u.name}  (${u.count} stocks)`;
-          sel.appendChild(o);
-        });
-      } catch { /* error already shown */ }
     }
 
     /* ── Events ── */
