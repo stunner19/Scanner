@@ -181,6 +181,118 @@
       min-width: 0;
     }
 
+    /* ── Backtest results detail ── */
+    .bt-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .bt-stat-tile {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+
+    .bt-stat-tile .bt-label {
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-3);
+      font-family: var(--font-mono);
+    }
+
+    .bt-stat-tile .bt-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 600;
+      margin-top: 6px;
+    }
+
+    .bt-stat-tile .bt-sub {
+      font-size: 11.5px;
+      color: var(--text-3);
+      margin-top: 4px;
+    }
+
+    .bt-callout {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin: 18px 0;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .bt-section-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 28px 0 4px;
+    }
+
+    .bt-rule-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+
+    .bt-rule-list li {
+      margin-bottom: 3px;
+    }
+
+    .bt-formula {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 8px 0;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    .bt-chart-wrap {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin: 16px 0;
+      background: var(--surface2);
+    }
+
+    .bt-legend {
+      display: flex;
+      gap: 18px;
+      font-size: 12px;
+      color: var(--text-2);
+      margin-bottom: 6px;
+    }
+
+    .bt-legend .sw {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+
+    .bt-trade-scroll {
+      max-height: 420px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-top: 10px;
+    }
+
+    .bt-trade-scroll thead {
+      position: sticky;
+      top: 0;
+    }
+
     .header-inner {
       display: flex;
       align-items: flex-end;
@@ -1152,6 +1264,7 @@
 
   </div><!-- /page -->
 
+  <script src="backtest-data.js"></script>
   <script>
     /* ═══════════════════════════════════════════════════════════════
        CONFIG
@@ -1306,11 +1419,192 @@
         return;
       }
 
+      const sleeveKey = (typeof BACKTEST_SLEEVES !== 'undefined')
+        ? Object.keys(BACKTEST_SLEEVES).find(k => slugify(BACKTEST_SLEEVES[k].label) === slug)
+        : null;
+
+      if (sleeveKey) {
+        content.innerHTML = renderSleeveBacktest(s, BACKTEST_SLEEVES[sleeveKey], sleeveKey);
+        drawBacktestEquityChart();
+        wireTradeFilters(sleeveKey);
+        return;
+      }
+
       content.innerHTML = `
         <div class="panel-label">${s.name}</div>
         <p style="color:var(--text-2);font-size:13px;margin-bottom:16px">${s.description}</p>
         ${emptyState('Backtest results coming soon', "This strategy's historical performance will be shown here")}
       `;
+    }
+
+    function fmtRupee(n) {
+      const abs = Math.abs(n);
+      const lakhs = abs / 100000;
+      const sign = n < 0 ? '-' : '';
+      return `${sign}₹${lakhs.toFixed(lakhs >= 100 ? 0 : 1)}L`;
+    }
+
+    function renderSleeveBacktest(strategy, sleeve, sleeveKey) {
+      const otherLabel = sleeveKey === 'sleeve1' ? BACKTEST_SLEEVES.sleeve2.label : BACKTEST_SLEEVES.sleeve1.label;
+
+      const reinvestRows = BACKTEST_REINVEST_TABLE.map(r => `
+        <tr${r.recommended ? ' style="background:var(--accent-dim)"' : ''}>
+          <td>${r.label}${r.recommended ? ' <span style="color:var(--accent);font-size:10px">★ used</span>' : ''}</td>
+          <td>${fmtRupee(r.totalProfit)}</td>
+          <td>${r.totalReturnPct}%</td>
+          <td>${r.cagrPct}%</td>
+          <td>${r.maxDrawdownPct}%</td>
+          <td>${r.sharpe}</td>
+        </tr>`).join('');
+
+      const yearlyRows = BACKTEST_YEARLY.map(y => `
+        <tr>
+          <td>${y.year}</td>
+          <td class="${y.portfolio >= 0 ? 'up' : 'down'}">${y.portfolio >= 0 ? '+' : ''}${fmtRupee(y.portfolio)}</td>
+          <td class="${y.niftybeesPct >= 0 ? 'up' : 'down'}">${y.niftybeesPct >= 0 ? '+' : ''}${y.niftybeesPct}%</td>
+        </tr>`).join('');
+
+      return `
+        <div class="panel-label">${strategy.name}</div>
+        <p style="color:var(--text-2);font-size:13px;margin-bottom:8px">${strategy.description}</p>
+
+        <div class="bt-callout">
+          Part of the blended <strong>70/30 "40L Momentum Portfolio"</strong> backtest
+          (${BACKTEST_META.period}, starting capital ${fmtRupee(BACKTEST_META.capital)}) alongside
+          <strong>${otherLabel}</strong>. The headline stats below (Total Profit, CAGR, Max Drawdown, Sharpe)
+          are for the <strong>combined portfolio</strong>, not this sleeve run standalone — the two sleeves
+          share one capital pool specifically so their drawdowns don't line up. Trade counts, hold time, and
+          the trade log below are this sleeve's own.
+        </div>
+
+        <div class="bt-stat-grid">
+          <div class="bt-stat-tile">
+            <div class="bt-label">Total Profit</div>
+            <div class="bt-value up">${fmtRupee(BACKTEST_META.totalProfit)}</div>
+            <div class="bt-sub">${BACKTEST_META.totalReturnPct}% return</div>
+          </div>
+          <div class="bt-stat-tile">
+            <div class="bt-label">CAGR</div>
+            <div class="bt-value up">${BACKTEST_META.cagrPct}%</div>
+            <div class="bt-sub">vs ${BACKTEST_META.niftybeesCagrPct}% for NIFTYBEES</div>
+          </div>
+          <div class="bt-stat-tile">
+            <div class="bt-label">Max Drawdown</div>
+            <div class="bt-value up">${BACKTEST_META.maxDrawdownPct}%</div>
+            <div class="bt-sub">vs ${BACKTEST_META.niftybeesMaxDrawdownPct}% for NIFTYBEES</div>
+          </div>
+          <div class="bt-stat-tile">
+            <div class="bt-label">Sharpe Ratio</div>
+            <div class="bt-value up">${BACKTEST_META.sharpe}</div>
+            <div class="bt-sub">${BACKTEST_META.totalTrades} trades, weekly rebalance</div>
+          </div>
+        </div>
+
+        <div class="bt-section-title">This sleeve's rules</div>
+        <div style="font-size:12px;color:var(--text-3);font-family:var(--font-mono)">
+          ${sleeve.capitalPct}% of capital · ${sleeve.slots} concurrent slots
+        </div>
+        <div class="bt-formula">score = ${sleeve.scoreFormula}</div>
+        <p style="font-size:13px;color:var(--text-2)">${sleeve.entryRule}</p>
+        <ul class="bt-rule-list">${sleeve.exitRules.map(r => `<li>${r}</li>`).join('')}</ul>
+        <p style="font-size:12.5px;color:var(--text-3);margin-top:8px">
+          Average hold: ${sleeve.avgHoldDays} days. ${sleeve.trades} trades over the period${sleeve.tradesNote ? ` (${sleeve.tradesNote})` : ''}.
+        </p>
+
+        <div class="bt-section-title">Shared mechanics</div>
+        <p style="font-size:12.5px;color:var(--text-3)">${BACKTEST_SHARED_MECHANICS}</p>
+
+        <div class="bt-section-title">Portfolio equity vs NIFTYBEES</div>
+        <div class="bt-chart-wrap">
+          <div class="bt-legend">
+            <span><span class="sw" style="background:var(--accent)"></span>40L Momentum Portfolio</span>
+            <span><span class="sw" style="background:var(--text-3)"></span>NIFTYBEES (buy &amp; hold)</span>
+          </div>
+          <svg id="btEqChart" viewBox="0 0 860 320" style="width:100%;height:auto;overflow:visible"></svg>
+        </div>
+
+        <div class="bt-section-title">Reinvestment level (portfolio-wide)</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Total Profit</th><th>Return</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th></tr></thead>
+            <tbody>${reinvestRows}</tbody>
+          </table>
+        </div>
+
+        <div class="bt-section-title">Year by year (portfolio, 75% reinvest)</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Year</th><th>Portfolio</th><th>NIFTYBEES</th></tr></thead>
+            <tbody>${yearlyRows}</tbody>
+          </table>
+        </div>
+
+        <div class="bt-section-title">${sleeve.label} trade log (${sleeve.trades} trades)</div>
+        <div class="table-wrap bt-trade-scroll">
+          <table>
+            <thead><tr>
+              <th>Symbol</th><th>Entry Date</th><th>Entry ₹</th><th>Exit Date</th><th>Exit ₹</th>
+              <th>Qty</th><th>P&amp;L ₹</th><th>P&amp;L %</th><th>Exit Reason</th>
+            </tr></thead>
+            <tbody id="btTradeTbl"></tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function wireTradeFilters(sleeveKey) {
+      const sleeveTag = sleeveKey === 'sleeve1' ? 'S1' : 'S2';
+      const rows = BACKTEST_TRADES.filter(r => r[0] === sleeveTag);
+      const tbody = $('btTradeTbl');
+      if (!tbody) return;
+      tbody.innerHTML = rows.map(r => {
+        const [, symbol, entryDate, entryPx, exitDate, exitPx, qty, pnl, pnlPct, reason] = r;
+        const cls = pnl >= 0 ? 'up' : 'down';
+        const sign = pnl >= 0 ? '+' : '';
+        return `<tr>
+          <td>${symbol}</td><td>${entryDate}</td><td>₹${entryPx}</td><td>${exitDate}</td><td>₹${exitPx}</td>
+          <td>${qty}</td><td class="${cls}">${sign}₹${pnl.toLocaleString('en-IN')}</td>
+          <td class="${cls}">${sign}${pnlPct}%</td><td style="color:var(--text-3)">${reason.replace('_', ' ')}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function drawBacktestEquityChart() {
+      const svg = $('btEqChart');
+      if (!svg || typeof BACKTEST_PORTFOLIO_EQUITY === 'undefined') return;
+      const W = 860, H = 320, ML = 56, MR = 12, MT = 12, MB = 28;
+      const plotW = W - ML - MR, plotH = H - MT - MB;
+      const parseDate = s => new Date(s).getTime();
+      const allPts = [...BACKTEST_PORTFOLIO_EQUITY, ...BACKTEST_NIFTY_EQUITY];
+      const xMin = Math.min(...allPts.map(p => parseDate(p[0])));
+      const xMax = Math.max(...allPts.map(p => parseDate(p[0])));
+      const yMax = Math.max(...allPts.map(p => p[1])) * 1.06;
+      const xScale = t => ML + (t - xMin) / (xMax - xMin) * plotW;
+      const yScale = v => MT + plotH - (v / yMax) * plotH;
+
+      let s = '';
+      for (let i = 0; i <= 5; i++) {
+        const v = yMax * i / 5, y = yScale(v);
+        s += `<line x1="${ML}" y1="${y}" x2="${W - MR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
+        s += `<text x="${ML - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-3)">${(v / 100000).toFixed(0)}L</text>`;
+      }
+      [2022, 2023, 2024, 2025, 2026].forEach(y => {
+        const t = new Date(y + '-01-01').getTime();
+        if (t >= xMin && t <= xMax) {
+          const x = xScale(t);
+          s += `<line x1="${x}" y1="${MT}" x2="${x}" y2="${H - MB}" stroke="var(--border)" stroke-width="1"/>`;
+          s += `<text x="${x}" y="${H - MB + 16}" text-anchor="middle" font-size="10" fill="var(--text-3)">${y}</text>`;
+        }
+      });
+
+      const pathFor = (data, color) => {
+        const d = data.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(parseDate(p[0])).toFixed(1)} ${yScale(p[1]).toFixed(1)}`).join(' ');
+        return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>`;
+      };
+      s += pathFor(BACKTEST_NIFTY_EQUITY, 'var(--text-3)');
+      s += pathFor(BACKTEST_PORTFOLIO_EQUITY, 'var(--accent)');
+
+      svg.innerHTML = s;
     }
 
     function handleRoute() {
