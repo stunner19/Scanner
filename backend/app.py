@@ -229,6 +229,7 @@ def scan():
         results = strategy.run(tickers)
         results.sort(
             key=lambda x: (
+                x["rank"] if x.get("rank") is not None else 0,
                 0 if x.get("strength") == "Strong" else 1,
                 -abs(x.get("change_pct", 0)),
             )

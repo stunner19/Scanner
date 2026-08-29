@@ -1440,6 +1440,9 @@
             const ms = Date.now() - t0;
 
             matches.sort((a, b) => {
+              // Sleeve 1/2 rank stocks by cross-sectional score — respect
+              // that order instead of the generic strength/change_pct sort.
+              if (a.rank != null && b.rank != null) return a.rank - b.rank;
               const sa = a.strength === 'Strong' ? 0 : 1;
               const sb = b.strength === 'Strong' ? 0 : 1;
               if (sa !== sb) return sa - sb;
