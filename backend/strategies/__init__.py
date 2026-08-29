@@ -1,4 +1,11 @@
-"""Strategy registry — import and register all strategies here."""
+"""
+Strategy registry — import and register all strategies here.
+
+REMINDER: after adding a strategy here, also add it to STATIC_STRATEGIES in
+frontend/index.html. That list is a hardcoded snapshot so the scanner UI
+loads instantly without waiting on a backend round trip — it's not derived
+from this file, so it goes stale silently if you forget.
+"""
 
 from .rsi_oversold import RSIOversoldStrategy
 from .macd_crossover import MACDCrossoverStrategy

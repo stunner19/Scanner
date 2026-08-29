@@ -1169,8 +1169,13 @@
     /* ───────────────────────────────────────────────────────────── */
     // Static snapshots so the scanner is usable instantly on page load —
     // no need to wait on a (possibly cold) backend just to populate two
-    // dropdowns. Refreshed silently in the background after first paint;
-    // keep this in sync when strategies/universes change on the backend.
+    // dropdowns. Refreshed silently in the background after first paint.
+    //
+    // REMINDER: STATIC_STRATEGIES is a hardcoded mirror of
+    // backend/strategies/__init__.py's STRATEGIES — it is NOT derived from
+    // it. Adding a strategy on the backend without adding it here means
+    // it's simply missing from this dropdown until the background refresh
+    // lands a second or two later. Keep both lists in sync by hand.
     const STATIC_STRATEGIES = [
       { name: "RSI Oversold", description: "Stocks where RSI(14) has dropped below 35 — oversold, potential bounce candidates." },
       { name: "MACD Bullish Crossover", description: "Stocks where MACD line crossed above its Signal line in the last 3 sessions." },
