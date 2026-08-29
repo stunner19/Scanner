@@ -1177,13 +1177,19 @@
         weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
       });
 
-      await Promise.all([loadStrategies(), loadUniverses()]);
+      // Show the page immediately — don't block first paint on backend calls,
+      // which can take 20-50s+ on a cold Render free-tier instance.
+      window.addEventListener('hashchange', handleRoute);
+      handleRoute();
 
       $('strategySelect').addEventListener('change', onStrategyChange);
       $('universeSelect').addEventListener('change', checkReady);
 
+      await Promise.all([loadStrategies(), loadUniverses()]);
+
       buildBacktestNav();
-      window.addEventListener('hashchange', handleRoute);
+      // Re-run in case the user landed on/navigated to #/backtest/<slug>
+      // before the strategy list (needed to resolve the slug) had loaded.
       handleRoute();
     }
 
