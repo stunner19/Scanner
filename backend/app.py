@@ -10,7 +10,9 @@ Render's free tier which kills connections after 90s:
 import os
 import json
 import logging
+import secrets
 import threading
+import time
 import traceback
 from flask import Flask, jsonify, request, redirect
 from flask_cors import CORS
@@ -34,6 +36,7 @@ from scan_store import (
     fail_job,
     cleanup_old_jobs,
 )
+from paper_trading_store import save_sync, get_latest as get_latest_paper_sync
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -131,6 +134,48 @@ def list_universes():
         results = list(pool.map(_fetch, names))
 
     return jsonify(results)
+
+
+# ── Paper Trading sync (pushed by the EC2 trader) ──────────────────────────────
+
+
+@app.route("/api/paper-trading/sync", methods=["POST"])
+def paper_trading_sync():
+    """
+    Receives the EC2 trader's latest state after each daily run.
+    Body: { "secret": "...", "state": {...}, "trade_log": [...], "summary": {...} }
+    """
+    expected = os.environ.get("PAPER_TRADING_SYNC_SECRET", "").strip()
+    if not expected:
+        return jsonify({"error": "PAPER_TRADING_SYNC_SECRET not configured on server"}), 503
+
+    body = request.get_json(force=True, silent=True) or {}
+    provided = str(body.get("secret", ""))
+    if not secrets.compare_digest(provided, expected):
+        return jsonify({"error": "Invalid secret"}), 401
+
+    state = body.get("state")
+    trade_log = body.get("trade_log")
+    summary = body.get("summary")
+    if not isinstance(state, dict) or not isinstance(trade_log, list) or not isinstance(summary, dict):
+        return jsonify({"error": "Body must include state (object), trade_log (array), summary (object)"}), 400
+
+    save_sync({
+        "state": state,
+        "trade_log": trade_log,
+        "summary": summary,
+        "synced_at": time.time(),
+    })
+    log.info("Paper trading sync received — %d trade log entries", len(trade_log))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/paper-trading/status")
+def paper_trading_status():
+    latest = get_latest_paper_sync()
+    if latest is None:
+        return jsonify({"synced": False})
+    return jsonify({"synced": True, **latest})
 
 
 # ── Poll-based Scanner ────────────────────────────────────────────────────────

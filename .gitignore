@@ -20,3 +20,4 @@ backend/config.json
 # Runtime caches (generated at runtime, not stored in git)
 backend/ohlcv_cache.db
 backend/universe_cache/
+backend/paper_trading_latest.json

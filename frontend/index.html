@@ -1160,6 +1160,7 @@
     <nav class="tabs" id="tabs">
       <a class="tab-link" id="tabScanner" href="#/scanner">Scanner</a>
       <a class="tab-link" id="tabBacktest" href="#/backtest">Backtest Results</a>
+      <a class="tab-link" id="tabPaperTrading" href="#/paper-trading">Paper Trading</a>
     </nav>
 
     <!-- ── SCANNER VIEW ── -->
@@ -1255,6 +1256,17 @@
         </div>
       </div>
     </div><!-- /view-backtest -->
+
+    <!-- ── PAPER TRADING VIEW ── -->
+    <div class="view" id="view-paper-trading">
+      <div id="paperTradingContent">
+        <div class="empty-state">
+          <div class="empty-icon">◈</div>
+          <div class="empty-title">Loading…</div>
+          <div class="empty-hint">Fetching the latest paper trading sync</div>
+        </div>
+      </div>
+    </div><!-- /view-paper-trading -->
 
     <!-- Footer -->
     <footer>
@@ -1607,16 +1619,125 @@
       svg.innerHTML = s;
     }
 
+    /* ── Paper Trading (live EC2 sync) ── */
+    let paperTradingLoaded = false;
+
+    async function loadPaperTrading() {
+      if (paperTradingLoaded) return;  // fetch once per page load; hash nav back to this tab won't re-fetch
+      paperTradingLoaded = true;
+
+      const el = $('paperTradingContent');
+      try {
+        const r = await fetch(`${BACKEND}/api/paper-trading/status`);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        renderPaperTrading(data);
+      } catch (e) {
+        paperTradingLoaded = false;  // allow retry on next tab visit
+        el.innerHTML = emptyState('Could not load paper trading data', e.message);
+      }
+    }
+
+    function renderPaperTrading(data) {
+      const el = $('paperTradingContent');
+      if (!data.synced) {
+        el.innerHTML = emptyState('No paper trading data yet', 'Waiting for the first sync from the EC2 trader');
+        return;
+      }
+
+      const { state, trade_log, summary, synced_at } = data;
+      const syncedAgo = synced_at ? new Date(synced_at * 1000).toLocaleString('en-IN') : 'unknown';
+
+      const sleeveCards = Object.entries(summary.sleeves || {}).map(([key, sv]) => {
+        const st = state[key] || {};
+        const openPositions = st.open_positions || [];
+        return `
+          <div class="bt-stat-tile">
+            <div class="bt-label">${sv.label || key}</div>
+            <div class="bt-value ${sv.equity >= 0 ? 'up' : 'down'}">${fmtRupee(sv.equity || 0)}</div>
+            <div class="bt-sub">Realized P&amp;L: ${sv.realized_pnl >= 0 ? '+' : ''}${fmtRupee(sv.realized_pnl || 0)} · ${openPositions.length}/${sv.n_slots ?? '?'} slots open</div>
+          </div>`;
+      }).join('');
+
+      const allOpenPositions = [];
+      Object.entries(state).forEach(([key, st]) => {
+        if (!st || !Array.isArray(st.open_positions)) return;
+        const label = (summary.sleeves && summary.sleeves[key] && summary.sleeves[key].label) || key;
+        st.open_positions.forEach(p => allOpenPositions.push({ ...p, sleeveLabel: label }));
+      });
+
+      const openRows = allOpenPositions.map(p => `
+        <tr>
+          <td>${p.sleeveLabel}</td><td>${p.symbol}</td><td>${p.entry_date}</td>
+          <td>₹${p.entry_price}</td><td>${p.qty}</td><td>₹${(p.invested || 0).toLocaleString('en-IN')}</td>
+          <td>₹${p.sl_price}</td><td>₹${p.tgt_price}</td>
+        </tr>`).join('');
+
+      const sortedTrades = [...(trade_log || [])].sort((a, b) => (b.exit_date || '').localeCompare(a.exit_date || ''));
+      const tradeRows = sortedTrades.map(t => {
+        const cls = (t.pnl || 0) >= 0 ? 'up' : 'down';
+        const sign = (t.pnl || 0) >= 0 ? '+' : '';
+        return `<tr>
+          <td>${t.sleeve || ''}</td><td>${t.symbol}</td><td>${t.entry_date}</td><td>₹${t.entry_price}</td>
+          <td>${t.exit_date}</td><td>₹${t.exit_price}</td><td>${t.qty}</td>
+          <td class="${cls}">${sign}₹${(t.pnl || 0).toLocaleString('en-IN')}</td>
+          <td style="color:var(--text-3)">${(t.exit_reason || '').replace('_', ' ')}</td>
+        </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        <div class="panel-label">Paper Trading — Sleeve 1 + Sleeve 2 (live, EC2)</div>
+        <p style="color:var(--text-3);font-size:12px;margin-bottom:8px">Last synced: ${syncedAgo}</p>
+
+        <div class="bt-stat-grid">
+          <div class="bt-stat-tile">
+            <div class="bt-label">Total Equity</div>
+            <div class="bt-value ${summary.total_equity >= 0 ? 'up' : 'down'}">${fmtRupee(summary.total_equity || 0)}</div>
+          </div>
+          <div class="bt-stat-tile">
+            <div class="bt-label">Net Profit</div>
+            <div class="bt-value ${summary.net_profit >= 0 ? 'up' : 'down'}">${summary.net_profit >= 0 ? '+' : ''}${fmtRupee(summary.net_profit || 0)}</div>
+          </div>
+          ${sleeveCards}
+        </div>
+
+        <div class="bt-section-title">Open positions (${allOpenPositions.length})</div>
+        ${allOpenPositions.length ? `
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Sleeve</th><th>Symbol</th><th>Entry Date</th><th>Entry ₹</th><th>Qty</th><th>Invested</th><th>SL</th><th>Target</th></tr></thead>
+            <tbody>${openRows}</tbody>
+          </table>
+        </div>` : `<p style="color:var(--text-3);font-size:13px">No open positions right now.</p>`}
+
+        <div class="bt-section-title">Trade log (${sortedTrades.length} closed trades)</div>
+        ${sortedTrades.length ? `
+        <div class="table-wrap bt-trade-scroll">
+          <table>
+            <thead><tr>
+              <th>Sleeve</th><th>Symbol</th><th>Entry Date</th><th>Entry ₹</th><th>Exit Date</th><th>Exit ₹</th>
+              <th>Qty</th><th>P&amp;L ₹</th><th>Exit Reason</th>
+            </tr></thead>
+            <tbody>${tradeRows}</tbody>
+          </table>
+        </div>` : `<p style="color:var(--text-3);font-size:13px">No closed trades yet.</p>`}
+      `;
+    }
+
     function handleRoute() {
       const hash = location.hash || '#/scanner';
       const parts = hash.replace(/^#\//, '').split('/');
       const tab = parts[0] || 'scanner';
       const isBacktest = tab === 'backtest';
+      const isPaperTrading = tab === 'paper-trading';
+      const isScanner = !isBacktest && !isPaperTrading;
 
-      $('view-scanner').classList.toggle('active', !isBacktest);
+      $('view-scanner').classList.toggle('active', isScanner);
       $('view-backtest').classList.toggle('active', isBacktest);
-      $('tabScanner').classList.toggle('active', !isBacktest);
+      $('view-paper-trading').classList.toggle('active', isPaperTrading);
+      $('tabScanner').classList.toggle('active', isScanner);
       $('tabBacktest').classList.toggle('active', isBacktest);
+      $('tabPaperTrading').classList.toggle('active', isPaperTrading);
 
       if (isBacktest) {
         const slug = parts[1];
@@ -1626,6 +1747,8 @@
           document.querySelectorAll('#backtestNav .backtest-nav-link').forEach(a => a.classList.remove('active'));
           $('backtestContent').innerHTML = emptyState('Select a strategy', 'Pick a strategy on the left to view its backtest results');
         }
+      } else if (isPaperTrading) {
+        loadPaperTrading();
       }
     }
 
