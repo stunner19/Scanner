@@ -172,6 +172,13 @@ def paper_trading_sync():
 
 @app.route("/api/paper-trading/status")
 def paper_trading_status():
+    """
+    Public and read-only by design — anyone can see the paper trading
+    results, same as the rest of the site. This is safe: it's a one-way
+    push from EC2 (see /sync above), the payload is trading data only
+    (no credentials, no infra details), and viewing it grants no write
+    access — the sync endpoint's secret is separate and unaffected.
+    """
     latest = get_latest_paper_sync()
     if latest is None:
         return jsonify({"synced": False})
